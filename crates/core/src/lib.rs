@@ -2,11 +2,15 @@
 //! Shared by the command-line tool and the tray app.
 
 pub mod activities;
+pub mod crypto;
 pub mod db;
 pub mod filter;
 pub mod gather;
+pub mod memory;
 pub mod projects;
+pub mod recall;
 pub mod recent;
+pub mod settings;
 pub mod watch;
 
 use std::path::PathBuf;

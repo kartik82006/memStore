@@ -8,13 +8,14 @@ description = "Records which files you work on and when, in a local SQLite datab
 anyhow.workspace = true
 chrono.workspace = true
 dirs.workspace = true
+getrandom = "0.3"
 lnk = "0.6"
 notify = "8"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 [dev-dependencies]
 lnk = { version = "0.6", features = ["binwrite", "unstable-save"] }
 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1.8"
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Foundation"] }

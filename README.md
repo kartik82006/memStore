@@ -58,6 +58,37 @@ Hover a file and click × if it doesn't belong; MemStor won't group those files 
 
 From the command line: `memstor activities --date 2026-10-27`.
 
+## Memories: "do you remember…"
+
+Each night MemStor saves the day's activities as **memories**: what the work was, its dates,
+how much time went into it, and how much of it happened late at night. Work that continues over
+several days becomes one memory. Then you can ask in plain words in the search box:
+
+- "the project I did on a tight deadline before Diwali"
+- "the edit for that organisation with alumni pics"
+- "late night essay last month", "budget sheet in March"
+
+MemStor understands times (today, last week, last month, a month, a year, "3 weeks ago", and
+festivals and holidays like Diwali, Holi, Eid or Christmas with before / after / around), kinds
+of work (edit, deck, sheet, photos, report…), how it felt (deadline, rush, all-nighter) and any
+other words, which it matches against names of files and folders. It all runs on your PC, with no AI
+service. Rename a memory to the words you'd use for it (the club, the client), or forget it.
+All memories are listed under Activities → All memories.
+
+![Memory search](docs/recall.png)
+
+## Privacy and settings
+
+- Everything stays on your PC. MemStor makes no network connections.
+- The database is encrypted (SQLCipher). Its key is sealed with Windows DPAPI, so only your
+  Windows account on this PC can open it. A database from an older version is encrypted on first start.
+- MemStor records file names, folders and times, never what is inside files.
+- **Settings**: start with Windows (on by default), extra folders to watch, folders never to
+  record (adding one also deletes its history), keep history for 3 months / 6 months / 1 year /
+  forever, and delete all history.
+
+![Settings](docs/settings.png)
+
 ## What it records
 
 | Source | Gives us | Needs admin? |
@@ -98,6 +129,9 @@ memstor watch                 # record without the tray app
 memstor today
 memstor day 2026-10-27
 memstor search thesis chapter
+memstor activities --date 2026-10-27
+memstor recall the edit I made before Diwali
+memstor remember              # save finished days as memories now
 ```
 
 ## Layout
@@ -129,4 +163,3 @@ On Linux the app needs `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 ## Next
 
 - Active-window titles as an opt-in signal.
-- Start with Windows (autostart) and a settings page for watched folders.

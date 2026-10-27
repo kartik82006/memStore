@@ -10,8 +10,9 @@ const recLabel = document.getElementById("rec-label");
 const toast = document.getElementById("toast");
 const tabs = [...document.querySelectorAll(".tabs button")];
 
-let view = "search"; // "search", "activities", "projects", or days ago as a string ("0", "1")
+let view = "search"; // "search", "activities", "projects", "settings", or days ago as a string ("0", "1")
 let rows = [];
+let recalled = null; // { understood, results } for a plain-language search
 let sel = 0;
 let paused = false;
 let watching = [];
@@ -67,10 +68,33 @@ function emptyState() {
   return box;
 }
 
+// "Do you remember…" results: saved memories that fit the question.
+function memoriesSection() {
+  const sec = el("section", "mem-section");
+  const head = el("div", "mem-head");
+  head.append(el("strong", null, recalled.results.length ? "Memories" : "No memories match"));
+  if (recalled.understood.length) {
+    const u = el("span", "mem-understood");
+    u.append("Looking for: ");
+    recalled.understood.forEach((w) => u.append(el("span", "chip", w)));
+    head.append(u);
+  }
+  sec.append(head);
+  recalled.results.forEach((m) => sec.append(window.Memories.card(m, load)));
+  if (rows.length) {
+    const files = el("div", "mem-head");
+    files.append(el("strong", null, "Files"));
+    sec.append(files);
+  }
+  return sec;
+}
+
 function render() {
   list.replaceChildren();
+  const showMemories = view === "search" && recalled && (recalled.results.length || recalled.understood.length);
+  if (showMemories) list.append(memoriesSection());
   if (!rows.length) {
-    list.append(emptyState());
+    if (!showMemories || !recalled.results.length) list.append(emptyState());
     return;
   }
   rows.forEach((r, i) => {
@@ -97,28 +121,34 @@ function render() {
 
 // Projects and Activities are panels with their own controls, not a keyboard list.
 function isPanel() {
-  return view === "projects" || view === "activities";
+  return view === "projects" || view === "activities" || view === "settings";
 }
 
 function select(i) {
   if (!rows.length) return;
   sel = Math.max(0, Math.min(rows.length - 1, i));
   render();
-  list.children[sel]?.scrollIntoView({ block: "nearest" });
+  list.querySelectorAll(":scope > .row")[sel]?.scrollIntoView({ block: "nearest" });
 }
 
 // ---------- data ----------
 
 async function load() {
-  if (view === "projects" || view === "activities") {
+  if (isPanel()) {
     document.body.classList.add("projects-view");
-    return view === "projects" ? window.Projects.show(list) : window.Activities.show(list);
+    const panel = { projects: window.Projects, activities: window.Activities, settings: window.Settings }[view];
+    return panel.show(list);
   }
   document.body.classList.remove("projects-view");
   try {
-    rows = view === "search"
-      ? await invoke("search", { query: q.value })
-      : await invoke("day", { daysAgo: Number(view) });
+    // Two or more words may be a question about the past: also ask the memories.
+    const asksMemory = view === "search" && q.value.trim().split(/\s+/).length >= 2;
+    const [r, m] = await Promise.all([
+      view === "search" ? invoke("search", { query: q.value }) : invoke("day", { daysAgo: Number(view) }),
+      asksMemory ? invoke("recall", { query: q.value }) : null,
+    ]);
+    rows = r;
+    recalled = m;
   } catch (e) {
     rows = [];
     showToast(String(e));
@@ -160,7 +190,9 @@ q.addEventListener("input", () => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (view === "projects" || view === "activities") {
+  // Typing in another box (e.g. renaming a memory) must not trigger list shortcuts.
+  if (e.target.tagName === "INPUT" && e.target !== q) return;
+  if (isPanel()) {
     // Typing in a project's name box must not trigger list shortcuts.
     if (e.key === "Escape" && e.target.tagName !== "INPUT") invoke("hide_window");
     return;
