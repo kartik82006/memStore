@@ -376,6 +376,110 @@ fn save_activity_as_project(name: String, paths: Vec<String>, state: State<AppSt
     Ok(id)
 }
 
+// ---------- memories ----------
+
+#[derive(Serialize)]
+struct MemoryFileDto {
+    path: String,
+    name: String,
+    folder: String,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+struct MemoryDto {
+    id: i64,
+    label: String,
+    work: String,
+    topic: String,
+    start: i64,
+    end: i64,
+    active_minutes: i64,
+    late_minutes: i64,
+    days: i64,
+    why: Vec<String>,
+    files: Vec<MemoryFileDto>,
+}
+
+fn to_memory_dto(m: memstor_core::memory::Memory, why: Vec<String>) -> MemoryDto {
+    MemoryDto {
+        files: m
+            .files
+            .iter()
+            .map(|p| {
+                let (name, folder) = split(p);
+                MemoryFileDto { exists: Path::new(p).exists(), path: p.clone(), name, folder }
+            })
+            .collect(),
+        id: m.id,
+        label: m.label,
+        work: m.work,
+        topic: m.topic,
+        start: m.start,
+        end: m.end,
+        active_minutes: m.active_minutes,
+        late_minutes: m.late_minutes,
+        days: m.days,
+        why,
+    }
+}
+
+#[derive(Serialize)]
+struct RecallDto {
+    /// What MemStor understood from the question, as short phrases.
+    understood: Vec<String>,
+    results: Vec<MemoryDto>,
+}
+
+#[tauri::command]
+fn recall(query: String, state: State<AppState>) -> Result<RecallDto, String> {
+    let db = state.db.lock().map_err(err)?;
+    let (q, found) = db.recall(&query, 8).map_err(err)?;
+    let mut understood = Vec::new();
+    if let Some(l) = q.range_label {
+        understood.push(l);
+    }
+    understood.extend(q.kinds.iter().map(|k| memstor_core::memory::work_label(k).to_string()));
+    if q.rush {
+        understood.push("busy, on a deadline".into());
+    }
+    if q.late {
+        understood.push("late at night".into());
+    }
+    understood.extend(q.words.iter().map(|w| format!("\"{w}\"")));
+    Ok(RecallDto { understood, results: found.into_iter().map(|r| to_memory_dto(r.memory, r.why)).collect() })
+}
+
+#[tauri::command]
+fn list_memories(state: State<AppState>) -> Result<Vec<MemoryDto>, String> {
+    let db = state.db.lock().map_err(err)?;
+    Ok(db.memories().map_err(err)?.into_iter().map(|m| to_memory_dto(m, Vec::new())).collect())
+}
+
+#[tauri::command]
+fn rename_memory(id: i64, name: String, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.rename_memory(id, &name).map_err(err)
+}
+
+#[tauri::command]
+fn forget_memory(id: i64, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_memory(id).map_err(err)
+}
+
+#[tauri::command]
+fn gather_memory(id: i64, app: AppHandle, state: State<AppState>) -> Result<GatherDto, String> {
+    let m = {
+        let db = state.db.lock().map_err(err)?;
+        db.memories().map_err(err)?.into_iter().find(|m| m.id == id).ok_or("That memory no longer exists.")?
+    };
+    let day = |ts: i64| Local.timestamp_opt(ts, 0).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+    let title = if day(m.start) == day(m.end) { format!("{} {}", m.topic, day(m.start)) } else { format!("{} {} to {}", m.topic, day(m.start), day(m.end)) };
+    let g = gather::gather(&m.files, &gather::default_root(), &title).map_err(err)?;
+    let folder = g.folder.display().to_string();
+    let _ = app.opener().open_path(&folder, None::<&str>);
+    Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
+}
+
 fn apply_paused(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     state.control.set_paused(paused);
@@ -505,6 +609,11 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            recall,
+            list_memories,
+            rename_memory,
+            forget_memory,
+            gather_memory,
             list_activities,
             drop_from_activity,
             gather_activity,

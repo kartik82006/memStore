@@ -109,6 +109,7 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::projects::SCHEMA)?;
+        conn.execute_batch(crate::memory::SCHEMA)?;
         Ok(Self { conn })
     }
 

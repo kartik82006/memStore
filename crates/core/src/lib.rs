@@ -5,7 +5,9 @@ pub mod activities;
 pub mod db;
 pub mod filter;
 pub mod gather;
+pub mod memory;
 pub mod projects;
+pub mod recall;
 pub mod recent;
 pub mod watch;
 
