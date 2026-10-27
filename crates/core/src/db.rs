@@ -31,7 +31,7 @@ impl Kind {
 }
 
 /// One line of the "files I touched" list.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Touched {
     pub path: String,
     pub first: i64,
@@ -89,6 +89,8 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // The collector and the search window each hold a connection; wait instead of failing.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
@@ -174,6 +176,17 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Most recently active files, newest first, skipping files whose last event was a delete.
+    pub fn recent(&self, limit: usize) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, f.last_seen FROM files f
+             WHERE (SELECT kind FROM events e WHERE e.file_id = f.id ORDER BY ts DESC, id DESC LIMIT 1) != 'deleted'
+             ORDER BY f.last_seen DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Full-text search over file names and folders. Each word matches as a prefix.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, i64)>> {
         let terms: Vec<String> = fts_text(query)
@@ -229,6 +242,17 @@ mod tests {
         assert_eq!(t[0].events, 2);
         assert_eq!(db.search("budg", 10).unwrap()[0].0, "C:/Docs/Budget 2026.docx");
         assert!(db.search("draft", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn recent_lists_newest_first_and_hides_deleted() {
+        let db = Db::in_memory().unwrap();
+        db.record("C:/a.txt", Kind::Created, "watcher", 1).unwrap();
+        db.record("C:/b.txt", Kind::Created, "watcher", 2).unwrap();
+        db.record("C:/c.txt", Kind::Created, "watcher", 3).unwrap();
+        db.record("C:/c.txt", Kind::Deleted, "watcher", 4).unwrap();
+        let paths: Vec<_> = db.recent(10).unwrap().into_iter().map(|r| r.0).collect();
+        assert_eq!(paths, ["C:/b.txt", "C:/a.txt"]);
     }
 
     #[test]

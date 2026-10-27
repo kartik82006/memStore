@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test core and CLI on Windows
+        run: cargo test -p memstor-core -p memstor-cli
+      - name: Build CLI
+        run: cargo build --release -p memstor-cli
+      - name: Build tray app installer
+        working-directory: app
+        run: npx --yes @tauri-apps/cli@2.12.4 build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memstor-windows
+          path: |
+            target/release/memstor.exe
+            target/release/memstor-app.exe
+            target/release/bundle/nsis/*.exe
+
+  linux-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p memstor-core -p memstor-cli

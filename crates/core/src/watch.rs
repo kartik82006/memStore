@@ -8,6 +8,7 @@ use notify::event::{EventKind, ModifyKind, RenameMode};
 use notify::{RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -117,29 +118,50 @@ pub fn default_folders() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Runs until the process is stopped.
-pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>) -> Result<()> {
+/// Lets another thread pause recording or stop the collector.
+#[derive(Default)]
+pub struct Control {
+    pub paused: AtomicBool,
+    pub stop: AtomicBool,
+}
+
+impl Control {
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+    pub fn set_paused(&self, v: bool) {
+        self.paused.store(v, Ordering::Relaxed)
+    }
+}
+
+/// Watches `folders` and re-reads Recent Items every minute until `control.stop` is set.
+/// While paused, events are dropped and nothing is written.
+pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>, control: &Control) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx)?;
     for f in folders {
-        watcher.watch(f, RecursiveMode::Recursive)?;
-        println!("watching {}", f.display());
+        match watcher.watch(f, RecursiveMode::Recursive) {
+            Ok(()) => println!("watching {}", f.display()),
+            Err(e) => eprintln!("cannot watch {}: {e}", f.display()),
+        }
     }
     if let Some(dir) = &recent_dir {
-        let n = recent::scan(dir, db)?;
-        println!("reading Recent Items from {} ({n} new)", dir.display());
+        if !control.is_paused() {
+            let n = recent::scan(dir, db)?;
+            println!("reading Recent Items from {} ({n} new)", dir.display());
+        }
     }
-    println!("recording… press Ctrl+C to stop");
 
     let mut rec = Recorder::new(db);
     let mut last_recent = std::time::Instant::now();
-    loop {
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(ev)) => {
+    while !control.stop.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Ok(ev)) if !control.is_paused() => {
                 if let Err(e) = rec.handle(ev.kind, &ev.paths, now()) {
                     eprintln!("could not record {:?}: {e}", ev.paths);
                 }
             }
+            Ok(Ok(_)) => {}
             Ok(Err(e)) => eprintln!("watcher error: {e}"),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -147,8 +169,10 @@ pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>) -> Result<
         if let Some(dir) = &recent_dir {
             if last_recent.elapsed() >= RECENT_EVERY {
                 last_recent = std::time::Instant::now();
-                if let Err(e) = recent::scan(dir, db) {
-                    eprintln!("could not read Recent Items: {e}");
+                if !control.is_paused() {
+                    if let Err(e) = recent::scan(dir, db) {
+                        eprintln!("could not read Recent Items: {e}");
+                    }
                 }
             }
         }
@@ -203,6 +227,34 @@ mod tests {
         let t = db.touched_between(0, 100).unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].events, 2, "one burst at t=10, one temp-file save at t=30");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pause_drops_events_and_stop_ends_the_loop() {
+        let dir = tmpdir("pause");
+        let db_path = dir.join("m.db");
+        let control = std::sync::Arc::new(Control::default());
+        control.set_paused(true);
+        let (c2, d2, p2) = (control.clone(), dir.clone(), db_path.clone());
+        let h = std::thread::spawn(move || {
+            let db = Db::open(&p2).unwrap();
+            run(&db, &[d2], None, &c2).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(dir.join("while-paused.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        control.set_paused(false);
+        std::thread::sleep(Duration::from_millis(1200));
+        std::fs::write(dir.join("after-resume.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        control.stop.store(true, Ordering::Relaxed);
+        h.join().unwrap();
+
+        let db = Db::open(&db_path).unwrap();
+        let paths: Vec<String> = db.touched_between(0, i64::MAX).unwrap().into_iter().map(|t| t.path).collect();
+        assert!(paths.iter().any(|p| p.ends_with("after-resume.txt")), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.ends_with("while-paused.txt")), "{paths:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
