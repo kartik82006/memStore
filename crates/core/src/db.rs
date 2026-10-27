@@ -2,10 +2,28 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
+use crate::crypto;
 use std::path::Path;
 
 pub struct Db {
     pub(crate) conn: Connection,
+    /// Folders the user excluded, re-read now and then (another connection may change them).
+    pub(crate) excluded: std::cell::RefCell<Option<(std::time::Instant, Vec<String>)>>,
+    encrypted: bool,
+}
+
+/// Move an unreadable database and its key out of the way, keeping them in case.
+fn set_aside(path: &Path) -> Result<()> {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    for p in [path.to_path_buf(), crypto::key_path(path)] {
+        if p.exists() {
+            std::fs::rename(&p, format!("{}.unreadable-{stamp}", p.display()))?;
+        }
+    }
+    for ext in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+    }
+    Ok(())
 }
 
 /// What happened to a file.
@@ -91,11 +109,40 @@ fn fts_text(s: &str) -> String {
 }
 
 impl Db {
+    /// Opens (or creates) the encrypted database at `path`. Its key lives next to it in
+    /// a `.key` file; an old unencrypted database is encrypted on the way.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Self::init(Connection::open(path)?)
+        let key = match crypto::load_or_create_key(path) {
+            Ok(k) => k,
+            Err(e) => {
+                // The key can't be unlocked (e.g. the folder was copied from another PC). The old
+                // data is unreadable either way; keep it aside and start fresh rather than not start.
+                eprintln!("{e:#}; starting a new database");
+                set_aside(path)?;
+                crypto::load_or_create_key(path)?
+            }
+        };
+        if crypto::is_plain_sqlite(path) {
+            crypto::encrypt_existing(path, &key)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(&format!("PRAGMA key = {};", crypto::key_literal(&key)))?;
+        if conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)).is_err() {
+            drop(conn);
+            eprintln!("the database does not open with its key; starting a new database");
+            set_aside(path)?;
+            return Self::open(path);
+        }
+        let mut db = Self::init(conn)?;
+        db.encrypted = true;
+        Ok(db)
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
     }
 
     #[cfg(test)]
@@ -110,7 +157,8 @@ impl Db {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(crate::projects::SCHEMA)?;
         conn.execute_batch(crate::memory::SCHEMA)?;
-        Ok(Self { conn })
+        conn.execute_batch(crate::settings::SCHEMA)?;
+        Ok(Self { conn, excluded: Default::default(), encrypted: false })
     }
 
     fn file_id(&self, path: &str) -> Result<Option<i64>> {
@@ -143,6 +191,9 @@ impl Db {
 
     /// Records one event. Returns false if the same event was already stored.
     pub fn record(&self, path: &str, kind: Kind, source: &str, ts: i64) -> Result<bool> {
+        if self.is_excluded(path)? {
+            return Ok(false);
+        }
         // A delete only matters for a file we already know about.
         if kind == Kind::Deleted && self.file_id(path)?.is_none() {
             return Ok(false);
@@ -157,6 +208,9 @@ impl Db {
 
     /// Moves a file's history to its new path, so a rename keeps everything it had.
     pub fn rename(&self, from: &str, to: &str, source: &str, ts: i64) -> Result<()> {
+        if self.is_excluded(to)? {
+            return Ok(());
+        }
         let id = match (self.file_id(from)?, self.file_id(to)?) {
             (Some(old), None) => {
                 let (name, ext) = split_name(to);

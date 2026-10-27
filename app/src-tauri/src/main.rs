@@ -17,18 +17,30 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt;
 
 const HOTKEY_LABEL: &str = "Ctrl+Shift+Space";
+/// Meta key set once start-with-Windows has been turned on the first time.
+const AUTOSTART_SET_KEY: &str = "autostart_set";
 
 struct AppState {
     /// The window's own connection; the collector thread has a separate one.
     db: Mutex<Db>,
-    control: Arc<Control>,
+    /// The running collector; replaced when the watched folders change.
+    collector: Mutex<(Arc<Control>, Vec<PathBuf>)>,
     db_path: PathBuf,
-    folders: Vec<PathBuf>,
     pause_item: MenuItem<Wry>,
     hotkey_ok: Mutex<bool>,
+}
+
+impl AppState {
+    fn control(&self) -> Arc<Control> {
+        self.collector.lock().map(|c| c.0.clone()).unwrap_or_default()
+    }
+    fn folders(&self) -> Vec<PathBuf> {
+        self.collector.lock().map(|c| c.1.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(Serialize)]
@@ -125,9 +137,9 @@ fn show_in_folder(path: String, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn status(state: State<AppState>) -> Status {
     Status {
-        paused: state.control.is_paused(),
+        paused: state.control().is_paused(),
         db_path: state.db_path.display().to_string(),
-        folders: state.folders.iter().map(|f| f.display().to_string()).collect(),
+        folders: state.folders().iter().map(|f| f.display().to_string()).collect(),
         hotkey: state.hotkey_ok.lock().ok().filter(|ok| **ok).map(|_| HOTKEY_LABEL.to_string()),
     }
 }
@@ -480,9 +492,111 @@ fn gather_memory(id: i64, app: AppHandle, state: State<AppState>) -> Result<Gath
     Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
 }
 
+// ---------- settings ----------
+
+/// Folders to watch: the defaults plus the user's extra folders, minus excluded ones.
+fn watched_folders(db: &Db) -> Vec<PathBuf> {
+    let excluded = db.excluded_folders().unwrap_or_default();
+    let mut folders = watch::default_folders();
+    folders.extend(db.extra_folders().unwrap_or_default().into_iter().map(PathBuf::from));
+    folders.retain(|f| {
+        let f = f.display().to_string();
+        !excluded.iter().any(|e| e.eq_ignore_ascii_case(&f) || memstor_core::projects::is_inside(&f, e))
+    });
+    folders.dedup();
+    folders
+}
+
+/// Stop the collector and start a new one on the current folders (keeps the paused state).
+fn restart_collector(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let folders = watched_folders(&*state.db.lock().map_err(err)?);
+    let mut c = state.collector.lock().map_err(err)?;
+    c.0.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let control = Arc::new(Control::default());
+    control.set_paused(c.0.is_paused());
+    start_collector(state.db_path.clone(), folders.clone(), control.clone());
+    *c = (control, folders);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SettingsDto {
+    watching: Vec<String>,
+    extra: Vec<String>,
+    excluded: Vec<String>,
+    keep_days: i64,
+    autostart: bool,
+    db_path: String,
+    db_bytes: u64,
+    encrypted: bool,
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsDto, String> {
+    let db = state.db.lock().map_err(err)?;
+    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let wal = PathBuf::from(format!("{}-wal", state.db_path.display()));
+    Ok(SettingsDto {
+        watching: state.folders().iter().map(|f| f.display().to_string()).collect(),
+        extra: db.extra_folders().map_err(err)?,
+        excluded: db.excluded_folders().map_err(err)?,
+        keep_days: db.keep_days().map_err(err)?,
+        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        db_bytes: size(&state.db_path) + size(&wal),
+        db_path: state.db_path.display().to_string(),
+        encrypted: db.is_encrypted(),
+    })
+}
+
+#[tauri::command]
+fn add_extra_folder(folder: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.add_extra_folder(&folder).map_err(err)?;
+    restart_collector(&app)
+}
+
+#[tauri::command]
+fn remove_extra_folder(folder: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.remove_extra_folder(&folder).map_err(err)?;
+    restart_collector(&app)
+}
+
+/// Never record this folder again and forget what was recorded there. Returns files forgotten.
+#[tauri::command]
+fn exclude_folder(folder: String, app: AppHandle, state: State<AppState>) -> Result<usize, String> {
+    let n = state.db.lock().map_err(err)?.exclude_folder(&folder).map_err(err)?;
+    restart_collector(&app)?;
+    Ok(n)
+}
+
+#[tauri::command]
+fn include_folder(folder: String, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.include_folder(&folder).map_err(err)?;
+    restart_collector(&app)
+}
+
+#[tauri::command]
+fn set_keep_days(days: i64, state: State<AppState>) -> Result<usize, String> {
+    let db = state.db.lock().map_err(err)?;
+    db.set_keep_days(days).map_err(err)?;
+    db.prune(Local::now().timestamp()).map_err(err)
+}
+
+#[tauri::command]
+fn set_autostart(on: bool, app: AppHandle) -> Result<bool, String> {
+    let al = app.autolaunch();
+    if on { al.enable() } else { al.disable() }.map_err(err)?;
+    Ok(al.is_enabled().unwrap_or(on))
+}
+
+#[tauri::command]
+fn wipe_history(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.wipe_history(Local::now().timestamp()).map_err(err)
+}
+
 fn apply_paused(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
-    state.control.set_paused(paused);
+    state.control().set_paused(paused);
     let _ = state.pause_item.set_text(if paused { "Resume recording" } else { "Pause recording" });
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(if paused { "MemStor (paused)" } else { "MemStor (recording)" }));
@@ -530,6 +644,7 @@ fn main() {
         // Must be first: a second launch just shows the existing window.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -543,8 +658,13 @@ fn main() {
         .setup(move |app| {
             let db_path = default_db_path();
             let db = Db::open(&db_path)?;
-            let folders = watch::default_folders();
+            let folders = watched_folders(&db);
             let control = Arc::new(Control::default());
+            // Start with Windows by default, once; the user can turn it off in Settings.
+            if db.get_meta(AUTOSTART_SET_KEY).ok().flatten().is_none() {
+                let _ = app.autolaunch().enable();
+                let _ = db.set_meta(AUTOSTART_SET_KEY, 1);
+            }
 
             let open_item = MenuItem::with_id(app, "open", format!("Search files\t{HOTKEY_LABEL}"), true, None::<&str>)?;
             let pause_item = MenuItem::with_id(app, "pause", "Pause recording", true, None::<&str>)?;
@@ -560,11 +680,11 @@ fn main() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_window(app),
                     "pause" => {
-                        let paused = app.state::<AppState>().control.is_paused();
+                        let paused = app.state::<AppState>().control().is_paused();
                         apply_paused(app, !paused);
                     }
                     "quit" => {
-                        app.state::<AppState>().control.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        app.state::<AppState>().control().stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         app.exit(0);
                     }
                     _ => {}
@@ -589,9 +709,8 @@ fn main() {
             let start_visible = std::env::args().any(|a| a == "--show");
             app.manage(AppState {
                 db: Mutex::new(db),
-                control,
+                collector: Mutex::new((control, folders)),
                 db_path,
-                folders,
                 pause_item,
                 hotkey_ok: Mutex::new(hotkey_ok),
             });
@@ -609,6 +728,14 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_settings,
+            add_extra_folder,
+            remove_extra_folder,
+            exclude_folder,
+            include_folder,
+            set_keep_days,
+            set_autostart,
+            wipe_history,
             recall,
             list_memories,
             rename_memory,

@@ -211,3 +211,17 @@ body.projects-view .hint { display: none; }
 .mem-file.gone .name { text-decoration: line-through; color: var(--muted); }
 .mem-rename { display: inline-flex; gap: 6px; align-items: center; }
 .mem-rename input { font: 15px var(--ui); padding: 3px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 0; width: 220px; }
+
+/* ---------- settings ---------- */
+.tabs .tab-right { margin-left: auto; }
+.st { display: flex; flex-direction: column; gap: 6px; padding: 6px 4px 16px; max-width: 640px; user-select: text; }
+.st-sec { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.st-sec:last-child { border-bottom: none; }
+.st-sec h3 { margin: 0; font-size: 14px; }
+.st-sec h4 { margin: 6px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+.st-toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.st-toggle input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.st-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.st-facts { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.st-path { font: 12px var(--mono); word-break: break-all; }
+.st .pj-folders { max-width: 100%; }

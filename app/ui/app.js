@@ -10,7 +10,7 @@ const recLabel = document.getElementById("rec-label");
 const toast = document.getElementById("toast");
 const tabs = [...document.querySelectorAll(".tabs button")];
 
-let view = "search"; // "search", "activities", "projects", or days ago as a string ("0", "1")
+let view = "search"; // "search", "activities", "projects", "settings", or days ago as a string ("0", "1")
 let rows = [];
 let recalled = null; // { understood, results } for a plain-language search
 let sel = 0;
@@ -121,7 +121,7 @@ function render() {
 
 // Projects and Activities are panels with their own controls, not a keyboard list.
 function isPanel() {
-  return view === "projects" || view === "activities";
+  return view === "projects" || view === "activities" || view === "settings";
 }
 
 function select(i) {
@@ -134,9 +134,10 @@ function select(i) {
 // ---------- data ----------
 
 async function load() {
-  if (view === "projects" || view === "activities") {
+  if (isPanel()) {
     document.body.classList.add("projects-view");
-    return view === "projects" ? window.Projects.show(list) : window.Activities.show(list);
+    const panel = { projects: window.Projects, activities: window.Activities, settings: window.Settings }[view];
+    return panel.show(list);
   }
   document.body.classList.remove("projects-view");
   try {
@@ -191,7 +192,7 @@ q.addEventListener("input", () => {
 document.addEventListener("keydown", (e) => {
   // Typing in another box (e.g. renaming a memory) must not trigger list shortcuts.
   if (e.target.tagName === "INPUT" && e.target !== q) return;
-  if (view === "projects" || view === "activities") {
+  if (isPanel()) {
     // Typing in a project's name box must not trigger list shortcuts.
     if (e.key === "Escape" && e.target.tagName !== "INPUT") invoke("hide_window");
     return;

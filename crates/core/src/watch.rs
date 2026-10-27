@@ -227,6 +227,11 @@ impl Control {
 const REMEMBER_EVERY: Duration = Duration::from_secs(30 * 60);
 
 fn remember(db: &Db) {
+    match db.prune(now()) {
+        Ok(0) => {}
+        Ok(n) => println!("removed {n} event(s) older than the keep-history setting"),
+        Err(e) => eprintln!("could not remove old history: {e}"),
+    }
     match db.remember_finished_days() {
         Ok(0) => {}
         Ok(n) => println!("saved {n} activit{} as memories", if n == 1 { "y" } else { "ies" }),
