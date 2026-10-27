@@ -34,6 +34,28 @@ enum Cmd {
     Day { date: String },
     /// Find files by words in their name or folder
     Search { words: Vec<String> },
+    /// List projects with their folders
+    Projects,
+    /// Create a project for a folder
+    ProjectAdd {
+        name: String,
+        #[arg(long)]
+        folder: PathBuf,
+    },
+    /// List a project's files for a day (default today), including files used around the same time
+    ProjectFiles {
+        name: String,
+        /// YYYY-MM-DD
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Put shortcuts to a project's files for a day into Documents\MemStor Gathered
+    Gather {
+        name: String,
+        /// YYYY-MM-DD
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// Import Windows' Recent Items once
     ScanRecent {
         /// Folder of .lnk shortcuts (defaults to the Windows Recent folder)
@@ -42,13 +64,31 @@ enum Cmd {
     },
 }
 
-fn print_day(db: &db::Db, date: NaiveDate) -> Result<()> {
+fn day_bounds(date: NaiveDate) -> Result<(i64, i64)> {
     let start = Local
         .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
         .earliest()
         .context("invalid local date")?;
-    let end = start + chrono::Duration::days(1);
-    let rows = db.touched_between(start.timestamp(), end.timestamp())?;
+    Ok((start.timestamp(), (start + chrono::Duration::days(1)).timestamp()))
+}
+
+fn parse_date(date: Option<String>) -> Result<NaiveDate> {
+    match date {
+        Some(d) => NaiveDate::parse_from_str(&d, "%Y-%m-%d").context("use the form YYYY-MM-DD"),
+        None => Ok(Local::now().date_naive()),
+    }
+}
+
+fn find_project(db: &db::Db, name: &str) -> Result<memstor_core::projects::Project> {
+    db.projects()?
+        .into_iter()
+        .find(|p| p.name.eq_ignore_ascii_case(name))
+        .with_context(|| format!("no project called \"{name}\"; see `memstor projects`"))
+}
+
+fn print_day(db: &db::Db, date: NaiveDate) -> Result<()> {
+    let (start, end) = day_bounds(date)?;
+    let rows = db.touched_between(start, end)?;
     if rows.is_empty() {
         println!("No files recorded on {date}.");
         return Ok(());
@@ -91,6 +131,56 @@ fn main() -> Result<()> {
                 let (path, last) = (h.path, h.last_seen);
                 let when = Local.timestamp_opt(last, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
                 println!("  {when}  {:<9} {path}", h.last_kind);
+            }
+            Ok(())
+        }
+        Cmd::Projects => {
+            let list = db.projects()?;
+            if list.is_empty() {
+                println!("No projects yet. Create one with `memstor project-add <name> --folder <path>`.");
+            }
+            for p in list {
+                println!("{}", p.name);
+                for f in p.folders {
+                    println!("    {f}");
+                }
+            }
+            Ok(())
+        }
+        Cmd::ProjectAdd { name, folder } => {
+            let id = db.create_project(&name)?;
+            db.add_project_folder(id, &folder.to_string_lossy())?;
+            println!("Created project \"{}\" for {}", name.trim(), folder.display());
+            Ok(())
+        }
+        Cmd::ProjectFiles { name, date } => {
+            let p = find_project(&db, &name)?;
+            let date = parse_date(date)?;
+            let (start, end) = day_bounds(date)?;
+            let files = db.project_files(p.id, start, end, memstor_core::projects::DEFAULT_NEARBY_MINUTES)?;
+            println!("{} file(s) for {} on {date}:\n", files.len(), p.name);
+            for f in files {
+                let tag = if f.reason == memstor_core::projects::Reason::Nearby { "same time" } else { "in folder" };
+                println!("  {tag:<10} {}", f.file.path);
+            }
+            Ok(())
+        }
+        Cmd::Gather { name, date } => {
+            let p = find_project(&db, &name)?;
+            let date = parse_date(date)?;
+            let (start, end) = day_bounds(date)?;
+            let paths: Vec<String> = db
+                .project_files(p.id, start, end, memstor_core::projects::DEFAULT_NEARBY_MINUTES)?
+                .into_iter()
+                .map(|f| f.file.path)
+                .collect();
+            if paths.is_empty() {
+                bail!("no files used for {} on {date}", p.name);
+            }
+            let g = memstor_core::gather::gather(&paths, &memstor_core::gather::default_root(), &format!("{} {date}", p.name))?;
+            println!("Made {} shortcut(s) in {}", g.linked, g.folder.display());
+            if !g.missing.is_empty() {
+                println!("Skipped {} file(s) that no longer exist.", g.missing.len());
             }
             Ok(())
         }

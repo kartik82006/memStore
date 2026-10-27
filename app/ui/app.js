@@ -10,7 +10,7 @@ const recLabel = document.getElementById("rec-label");
 const toast = document.getElementById("toast");
 const tabs = [...document.querySelectorAll(".tabs button")];
 
-let view = "search"; // "search", or days ago as a string ("0", "1")
+let view = "search"; // "search", "projects", or days ago as a string ("0", "1")
 let rows = [];
 let sel = 0;
 let paused = false;
@@ -105,6 +105,11 @@ function select(i) {
 // ---------- data ----------
 
 async function load() {
+  if (view === "projects") {
+    document.body.classList.add("projects-view");
+    return window.Projects.show(list);
+  }
+  document.body.classList.remove("projects-view");
   try {
     rows = view === "search"
       ? await invoke("search", { query: q.value })
@@ -150,6 +155,11 @@ q.addEventListener("input", () => {
 });
 
 document.addEventListener("keydown", (e) => {
+  if (view === "projects") {
+    // Typing in a project's name box must not trigger list shortcuts.
+    if (e.key === "Escape" && e.target.tagName !== "INPUT") invoke("hide_window");
+    return;
+  }
   if (e.key === "ArrowDown") { e.preventDefault(); select(sel + 1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); select(sel - 1); }
   else if (e.key === "Enter") { e.preventDefault(); openSelected(e.ctrlKey); }
@@ -158,13 +168,16 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-tabs.forEach((t) => t.addEventListener("click", () => { setView(t.dataset.view); q.focus(); }));
+tabs.forEach((t) => t.addEventListener("click", () => {
+  setView(t.dataset.view);
+  if (t.dataset.view !== "projects") q.focus();
+}));
 
 recBtn.addEventListener("click", () => invoke("set_paused", { paused: !paused }));
 
 listen("paused-changed", (e) => { setPausedUi(e.payload); if (view !== "search") load(); });
-listen("window-shown", () => { q.focus(); q.select(); load(); });
-window.addEventListener("focus", () => q.focus());
+listen("window-shown", () => { if (view !== "projects") { q.focus(); q.select(); } load(); });
+window.addEventListener("focus", () => { if (view !== "projects") q.focus(); });
 
 // ---------- start ----------
 

@@ -3,6 +3,8 @@
 
 pub mod db;
 pub mod filter;
+pub mod gather;
+pub mod projects;
 pub mod recent;
 pub mod watch;
 

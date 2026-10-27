@@ -25,6 +25,23 @@ Every push builds Windows downloads on GitHub Actions. Open the latest run under
 - Closing the window keeps MemStor running. Quit from the tray menu.
 - Start it with `memstor-app.exe --show` to open the window right away.
 
+## Projects and gather (M2)
+
+Open the **Projects** tab:
+
+- **+ New** names a project and points it at the folder where its files live (you can add more folders).
+  Or press **Make project** on one of the *Folders you worked in this week* suggestions.
+- Pick **Today**, **Yesterday** or **Last 7 days** to see every file used for the project. Files in its
+  folders are listed, and so are files elsewhere (Downloads, Desktop…) used within 30 minutes of them,
+  marked **same time**. Untick anything that doesn't belong.
+- **Gather** makes a new folder of shortcuts in `Documents\MemStor Gathered\<project> <date>` and opens it.
+  Your files are never moved or copied.
+
+![Projects tab](docs/projects-tab.png)
+
+From the command line: `memstor projects`, `memstor project-add Thesis --folder D:\Uni\Thesis`,
+`memstor project-files Thesis`, `memstor gather Thesis --date 2026-10-27`.
+
 ## What it records
 
 | Source | Gives us | Needs admin? |
@@ -95,7 +112,5 @@ On Linux the app needs `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 
 ## Next
 
-- M2: projects. Name a project, let MemStor suggest one from folders you use together, and
-  gather "everything I used for Project A today" into a folder of shortcuts.
 - Active-window titles as an opt-in signal.
 - Start with Windows (autostart) and a settings page for watched folders.

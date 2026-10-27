@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 pub struct Db {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 /// What happened to a file.
@@ -108,6 +108,7 @@ impl Db {
         // The collector and the search window each hold a connection; wait instead of failing.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::projects::SCHEMA)?;
         Ok(Self { conn })
     }
 
@@ -176,6 +177,16 @@ impl Db {
             params![id, ts, Kind::Renamed.as_str(), source, from],
         )?;
         Ok(())
+    }
+
+    /// Every event in [start, end) as (path, time), oldest first.
+    pub fn events_between(&self, start: i64, end: i64) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, e.ts FROM events e JOIN files f ON f.id = e.file_id
+             WHERE e.ts >= ?1 AND e.ts < ?2 ORDER BY e.ts",
+        )?;
+        let rows = stmt.query_map(params![start, end], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Files with any activity in [start, end), most recent first.
