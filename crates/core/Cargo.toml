@@ -16,4 +16,5 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 lnk = { version = "0.6", features = ["binwrite", "unstable-save"] }
 
 [target.'cfg(windows)'.dependencies]
+mslnk = "0.1.8"
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

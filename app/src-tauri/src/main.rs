@@ -7,7 +7,9 @@
 use chrono::{Duration, Local, TimeZone};
 use memstor_core::db::Db;
 use memstor_core::watch::{self, Control};
-use memstor_core::{default_db_path, recent};
+use memstor_core::projects::{DEFAULT_NEARBY_MINUTES, Reason};
+use memstor_core::{default_db_path, gather, recent};
+use tauri_plugin_dialog::DialogExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -96,18 +98,7 @@ fn day(days_ago: i64, state: State<AppState>) -> Result<Vec<DayRow>, String> {
     let rows = db.touched_between(start.timestamp(), end.timestamp()).map_err(err)?;
     Ok(rows
         .into_iter()
-        .map(|t| {
-            let (name, folder) = split(&t.path);
-            DayRow {
-                name,
-                folder,
-                first: t.first,
-                last: t.last,
-                events: t.events,
-                kinds: t.kinds.split(',').map(str::to_string).collect(),
-                path: t.path,
-            }
-        })
+        .map(to_day_row)
         .collect())
 }
 
@@ -151,6 +142,167 @@ fn hide_window(app: AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
+}
+
+
+// ---------- projects ----------
+
+#[derive(Serialize)]
+struct ProjectDto {
+    id: i64,
+    name: String,
+    folders: Vec<String>,
+    /// Files used today (in its folders or around the same time).
+    today: usize,
+}
+
+#[derive(Serialize)]
+struct ProjectFileDto {
+    #[serde(flatten)]
+    row: DayRow,
+    /// "folder" when inside the project's folders, "nearby" when used around the same time.
+    reason: &'static str,
+}
+
+#[derive(Serialize)]
+struct SuggestionDto {
+    folder: String,
+    name: String,
+    files: i64,
+}
+
+#[derive(Serialize)]
+struct GatherDto {
+    folder: String,
+    linked: usize,
+    missing: usize,
+}
+
+/// [start, end) in unix seconds for "today", "yesterday" or "week" (last 7 days incl. today).
+fn range_bounds(range: &str) -> Result<(i64, i64, String), String> {
+    let today = Local::now().date_naive();
+    let (first, days, label) = match range {
+        "today" => (today, 1, today.format("%Y-%m-%d").to_string()),
+        "yesterday" => {
+            let y = today - Duration::days(1);
+            (y, 1, y.format("%Y-%m-%d").to_string())
+        }
+        "week" => (today - Duration::days(6), 7, format!("week to {}", today.format("%Y-%m-%d"))),
+        other => return Err(format!("unknown range {other}")),
+    };
+    let start = Local
+        .from_local_datetime(&first.and_hms_opt(0, 0, 0).unwrap())
+        .earliest()
+        .ok_or("invalid local date")?;
+    Ok((start.timestamp(), (start + Duration::days(days)).timestamp(), label))
+}
+
+fn to_day_row(t: memstor_core::db::Touched) -> DayRow {
+    let (name, folder) = split(&t.path);
+    DayRow {
+        name,
+        folder,
+        first: t.first,
+        last: t.last,
+        events: t.events,
+        kinds: t.kinds.split(',').map(str::to_string).collect(),
+        path: t.path,
+    }
+}
+
+#[tauri::command]
+fn list_projects(state: State<AppState>) -> Result<Vec<ProjectDto>, String> {
+    let db = state.db.lock().map_err(err)?;
+    let (start, end, _) = range_bounds("today")?;
+    db.projects()
+        .map_err(err)?
+        .into_iter()
+        .map(|p| {
+            let today = db.project_files(p.id, start, end, DEFAULT_NEARBY_MINUTES).map_err(err)?.len();
+            Ok(ProjectDto { id: p.id, name: p.name, folders: p.folders, today })
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn create_project(name: String, folder: Option<String>, state: State<AppState>) -> Result<i64, String> {
+    let db = state.db.lock().map_err(err)?;
+    let id = db.create_project(&name).map_err(err)?;
+    if let Some(f) = folder {
+        db.add_project_folder(id, &f).map_err(err)?;
+    }
+    Ok(id)
+}
+
+#[tauri::command]
+fn delete_project(id: i64, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.delete_project(id).map_err(err)
+}
+
+#[tauri::command]
+fn add_project_folder(id: i64, folder: String, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.add_project_folder(id, &folder).map_err(err)
+}
+
+#[tauri::command]
+fn remove_project_folder(id: i64, folder: String, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.remove_project_folder(id, &folder).map_err(err)
+}
+
+/// Opens Windows' folder picker. Async so it runs off the main thread.
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Option<String> {
+    app.dialog().file().set_title("Choose a project folder").blocking_pick_folder().map(|p| p.to_string())
+}
+
+#[tauri::command]
+fn project_files(id: i64, range: String, state: State<AppState>) -> Result<Vec<ProjectFileDto>, String> {
+    let (start, end, _) = range_bounds(&range)?;
+    let db = state.db.lock().map_err(err)?;
+    Ok(db
+        .project_files(id, start, end, DEFAULT_NEARBY_MINUTES)
+        .map_err(err)?
+        .into_iter()
+        .map(|f| ProjectFileDto {
+            reason: if f.reason == Reason::InFolder { "folder" } else { "nearby" },
+            row: to_day_row(f.file),
+        })
+        .collect())
+}
+
+/// Folders you worked in during the last 7 days that look like projects.
+#[tauri::command]
+fn suggest_projects(state: State<AppState>) -> Result<Vec<SuggestionDto>, String> {
+    let (start, end, _) = range_bounds("week")?;
+    let home = dirs_home();
+    let db = state.db.lock().map_err(err)?;
+    Ok(db
+        .suggest_projects(start, end, home.as_deref(), 6)
+        .map_err(err)?
+        .into_iter()
+        .map(|s| SuggestionDto { folder: s.folder, name: s.name, files: s.files })
+        .collect())
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+}
+
+/// Makes Documents\MemStor Gathered\<project> <date> with shortcuts to `paths`, then opens it.
+#[tauri::command]
+fn gather_files(id: i64, range: String, paths: Vec<String>, app: AppHandle, state: State<AppState>) -> Result<GatherDto, String> {
+    if paths.is_empty() {
+        return Err("Pick at least one file to gather.".into());
+    }
+    let (_, _, label) = range_bounds(&range)?;
+    let name = {
+        let db = state.db.lock().map_err(err)?;
+        db.projects().map_err(err)?.into_iter().find(|p| p.id == id).map(|p| p.name).ok_or("That project no longer exists.")?
+    };
+    let g = gather::gather(&paths, &gather::default_root(), &format!("{name} {label}")).map_err(err)?;
+    let folder = g.folder.display().to_string();
+    let _ = app.opener().open_path(&folder, None::<&str>);
+    Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
 }
 
 fn apply_paused(app: &AppHandle, paused: bool) {
@@ -203,6 +355,7 @@ fn main() {
         // Must be first: a second launch just shows the existing window.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, sc, event| {
@@ -280,7 +433,24 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![search, day, open_file, show_in_folder, status, set_paused, hide_window])
+        .invoke_handler(tauri::generate_handler![
+            search,
+            day,
+            open_file,
+            show_in_folder,
+            status,
+            set_paused,
+            hide_window,
+            list_projects,
+            create_project,
+            delete_project,
+            add_project_folder,
+            remove_project_folder,
+            pick_folder,
+            project_files,
+            suggest_projects,
+            gather_files
+        ])
         .run(tauri::generate_context!())
         .expect("error while running MemStor");
 }
