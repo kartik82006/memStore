@@ -12,3 +12,15 @@ use std::path::PathBuf;
 pub fn default_db_path() -> PathBuf {
     dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("MemStor").join("memstor.db")
 }
+
+/// A fresh folder for tests. Not the system temp folder: on Windows that sits under
+/// AppData, which the noise filter skips on purpose.
+#[cfg(test)]
+pub(crate) fn test_dir(tag: &str) -> PathBuf {
+    let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test-scratch")
+        .join(format!("{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}

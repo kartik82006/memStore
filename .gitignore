@@ -4,3 +4,4 @@
 *.db-shm
 /app/src-tauri/gen
 node_modules
+test-scratch/

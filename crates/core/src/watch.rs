@@ -186,9 +186,7 @@ mod tests {
     use notify::event::{CreateKind, DataChange, RemoveKind};
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("memstor-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::test_dir(tag)
     }
 
     #[test]
