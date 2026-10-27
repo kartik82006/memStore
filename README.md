@@ -29,13 +29,30 @@ Every push builds Windows downloads on GitHub Actions. Open the latest run under
 
 | Source | Gives us | Needs admin? |
 | --- | --- | --- |
-| Folder watcher (Desktop, Documents, Downloads) | files created, saved, renamed, deleted | no |
+| Folder watcher | files created, edited, renamed, deleted | no |
+| Catch-up scan at start | files edited while MemStor was closed (first run: last 14 days) | no |
 | Recent Items (`%APPDATA%\Microsoft\Windows\Recent`) | files you opened anywhere on disk | no |
 
-It skips noise: Office lock files (`~$x.docx`), temp and partial downloads, hidden files,
-`node_modules`, `.git`, build output and AppData. A save done through a temp file
-(`A1B2.tmp` renamed over `report.docx`) counts as an edit of `report.docx`, and a rename
-keeps the file's history. Only paths, names and times are stored. File contents are never read.
+**Where it looks:** every folder in your user folder (Desktop, Documents, Downloads, Pictures,
+OneDrive…) except AppData and hidden tool folders like `.vscode`, plus other fixed drives (D:, E:…).
+Windows, Program Files and ProgramData are skipped.
+
+**Which files:** only everyday file types for now. The list is `TRACKED_TYPES` in
+`crates/core/src/filter.rs`:
+
+| Kind | Extensions |
+| --- | --- |
+| Documents | doc docx odt rtf txt md pdf epub pages tex |
+| Spreadsheets | xls xlsx xlsm ods csv tsv numbers |
+| Presentations | ppt pptx odp key |
+| Images | jpg jpeg png gif bmp webp heic heif tif tiff svg psd ai |
+| Audio | mp3 wav m4a aac flac ogg wma |
+| Video | mp4 mov avi mkv webm wmv m4v |
+| Archives | zip rar 7z |
+
+It also skips Office lock files (`~$x.docx`), temp and partial downloads, `node_modules` and build
+output. Saving through a temp file, as Word and Excel do, counts as one edit of the real file, and a
+rename keeps the file's history. Only paths, names and times are stored. File contents are never read.
 
 The database is `%LOCALAPPDATA%\MemStor\memstor.db`.
 

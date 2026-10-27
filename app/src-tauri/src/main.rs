@@ -35,6 +35,8 @@ struct FileHit {
     name: String,
     folder: String,
     when: i64,
+    /// What last happened: created, modified, renamed or opened.
+    kind: String,
 }
 
 #[derive(Serialize)]
@@ -74,9 +76,9 @@ fn search(query: String, state: State<AppState>) -> Result<Vec<FileHit>, String>
     let rows = if query.trim().is_empty() { db.recent(60) } else { db.search(&query, 60) }.map_err(err)?;
     Ok(rows
         .into_iter()
-        .map(|(path, when)| {
-            let (name, folder) = split(&path);
-            FileHit { path, name, folder, when }
+        .map(|h| {
+            let (name, folder) = split(&h.path);
+            FileHit { name, folder, when: h.last_seen, kind: h.last_kind, path: h.path }
         })
         .collect())
 }

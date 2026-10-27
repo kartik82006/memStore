@@ -14,6 +14,7 @@ let view = "search"; // "search", or days ago as a string ("0", "1")
 let rows = [];
 let sel = 0;
 let paused = false;
+let watching = [];
 let searchTimer;
 
 // ---------- formatting ----------
@@ -31,6 +32,9 @@ function when(ts) {
   if (d.toDateString() === y.toDateString()) return "Yesterday " + hm(ts);
   return d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + hm(ts);
 }
+
+// Words people use, not the database's event names.
+const KIND_LABEL = { created: "new", modified: "edited", renamed: "renamed", opened: "opened", deleted: "deleted" };
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -55,10 +59,10 @@ function emptyState() {
     box.append("Try part of the file name, or a folder it was in.");
   } else if (view === "search") {
     box.append(el("strong", null, "No files recorded yet"));
-    box.append("MemStor is watching your Desktop, Documents and Downloads. Open or save a file and it will show up here.");
+    box.append("MemStor is watching your user folders. Open, save or edit a document, sheet, slide deck, PDF, image or video and it will show up here.");
   } else {
     box.append(el("strong", null, view === "0" ? "Nothing touched today yet" : "Nothing recorded yesterday"));
-    box.append(paused ? "Recording is paused." : "Files you open, save or rename will be listed here.");
+    box.append(paused ? "Recording is paused." : "Files you open, edit or rename will be listed here.");
   }
   return box;
 }
@@ -82,13 +86,9 @@ function render() {
     const folder = el("div", "folder");
     folder.append(el("bdi", null, r.folder));
     row.append(folder);
-    if (r.kinds) {
-      const chips = el("div", "chips");
-      r.kinds.forEach((k) => chips.append(el("span", "chip " + k, k)));
-      row.append(chips);
-    } else {
-      row.append(el("div"));
-    }
+    const chips = el("div", "chips");
+    (r.kinds || [r.kind]).forEach((k) => chips.append(el("span", "chip " + k, KIND_LABEL[k] || k)));
+    row.append(chips);
     row.addEventListener("click", () => select(i));
     row.addEventListener("dblclick", () => openSelected(false));
     list.append(row);
@@ -138,7 +138,7 @@ function setPausedUi(p) {
   paused = p;
   recBtn.classList.toggle("paused", p);
   recLabel.textContent = p ? "Paused" : "Recording";
-  recBtn.title = p ? "Resume recording" : "Pause recording";
+  recBtn.title = (p ? "Resume recording" : "Pause recording") + (watching.length ? "\n\nWatching:\n" + watching.join("\n") : "");
 }
 
 // ---------- events ----------
@@ -171,6 +171,7 @@ window.addEventListener("focus", () => q.focus());
 (async () => {
   try {
     const s = await invoke("status");
+    watching = s.folders;
     setPausedUi(s.paused);
     document.getElementById("hotkey").textContent = s.hotkey ? `Open anywhere with ${s.hotkey}` : "Open from the tray icon";
   } catch (e) {

@@ -88,6 +88,7 @@ body {
 .row .folder { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; direction: rtl; text-align: left; }
 .row .chips { display: flex; gap: 4px; justify-content: flex-end; }
 .chip { font: 11px var(--mono); padding: 0 6px; border-radius: 99px; background: var(--accent-soft); color: var(--ink); }
+.chip.modified { background: var(--accent); color: var(--bg); }
 .chip.deleted { text-decoration: line-through; color: var(--muted); }
 
 .empty { color: var(--muted); padding: 40px 20px; text-align: center; line-height: 1.6; }

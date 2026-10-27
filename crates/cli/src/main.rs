@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Start recording. Watches Desktop, Documents and Downloads unless you name folders.
+    /// Start recording. Watches your user folder (minus AppData) and other fixed drives unless you name folders.
     Watch {
         /// A folder to watch (repeat for more)
         #[arg(long = "folder")]
@@ -87,9 +87,10 @@ fn main() -> Result<()> {
             if hits.is_empty() {
                 println!("Nothing found.");
             }
-            for (path, last) in hits {
+            for h in hits {
+                let (path, last) = (h.path, h.last_seen);
                 let when = Local.timestamp_opt(last, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
-                println!("  {when}  {path}");
+                println!("  {when}  {:<9} {path}", h.last_kind);
             }
             Ok(())
         }
