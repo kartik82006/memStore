@@ -2,3 +2,6 @@
 *.db
 *.db-wal
 *.db-shm
+/app/src-tauri/gen
+node_modules
+test-scratch/

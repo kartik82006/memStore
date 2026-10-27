@@ -1,11 +1,7 @@
 //! MemStor M0: a command-line test of the background collector.
 //! It records which files you create, edit, rename and open, and lists them by day.
 
-mod db;
-mod filter;
-mod recent;
-mod watch;
-
+use memstor_core::{db, recent, watch};
 use anyhow::{Context, Result, bail};
 use chrono::{Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
@@ -23,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Start recording. Watches Desktop, Documents and Downloads unless you name folders.
+    /// Start recording. Watches your user folder (minus AppData) and other fixed drives unless you name folders.
     Watch {
         /// A folder to watch (repeat for more)
         #[arg(long = "folder")]
@@ -44,10 +40,6 @@ enum Cmd {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-}
-
-fn default_db() -> PathBuf {
-    dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("MemStor").join("memstor.db")
 }
 
 fn print_day(db: &db::Db, date: NaiveDate) -> Result<()> {
@@ -71,7 +63,7 @@ fn print_day(db: &db::Db, date: NaiveDate) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let db_path = cli.db.unwrap_or_else(default_db);
+    let db_path = cli.db.unwrap_or_else(memstor_core::default_db_path);
     let db = db::Db::open(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
     match cli.cmd {
@@ -82,7 +74,8 @@ fn main() -> Result<()> {
             }
             let recent_dir = if no_recent { None } else { recent::default_dir().filter(|d| d.is_dir()) };
             println!("database: {}", db_path.display());
-            watch::run(&db, &folders, recent_dir)
+            println!("recording… press Ctrl+C to stop");
+            watch::run(&db, &folders, recent_dir, &watch::Control::default())
         }
         Cmd::Today => print_day(&db, Local::now().date_naive()),
         Cmd::Day { date } => {
@@ -94,9 +87,10 @@ fn main() -> Result<()> {
             if hits.is_empty() {
                 println!("Nothing found.");
             }
-            for (path, last) in hits {
+            for h in hits {
+                let (path, last) = (h.path, h.last_seen);
                 let when = Local.timestamp_opt(last, 0).single().map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
-                println!("  {when}  {path}");
+                println!("  {when}  {:<9} {path}", h.last_kind);
             }
             Ok(())
         }

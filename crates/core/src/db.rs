@@ -31,7 +31,7 @@ impl Kind {
 }
 
 /// One line of the "files I touched" list.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Touched {
     pub path: String,
     pub first: i64,
@@ -39,6 +39,18 @@ pub struct Touched {
     pub events: i64,
     pub kinds: String,
 }
+
+/// A file in search results, with what last happened to it.
+#[derive(Debug, Clone)]
+pub struct Hit {
+    pub path: String,
+    pub last_seen: i64,
+    pub last_kind: String,
+}
+
+/// The newest event's kind for a file (ties broken by insert order).
+const LAST_KIND: &str =
+    "(SELECT kind FROM events e WHERE e.file_id = f.id ORDER BY ts DESC, id DESC LIMIT 1)";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -59,6 +71,10 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS events_dedupe ON events(file_id, ts, kind, source);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(name, path, tokenize = 'unicode61');
 "#;
 
@@ -89,6 +105,8 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // The collector and the search window each hold a connection; wait instead of failing.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
@@ -174,8 +192,44 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Most recently active files, newest first, skipping files whose last event was a delete.
+    pub fn recent(&self, limit: usize) -> Result<Vec<Hit>> {
+        let sql = format!(
+            "SELECT f.path, f.last_seen, {LAST_KIND} AS k FROM files f
+             WHERE k != 'deleted' ORDER BY f.last_seen DESC LIMIT ?1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit as i64], |r| Ok(Hit { path: r.get(0)?, last_seen: r.get(1)?, last_kind: r.get(2)? }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Time of the newest event recorded for a file, if any.
+    pub fn last_event_ts(&self, path: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT max(e.ts) FROM events e JOIN files f ON f.id = e.file_id WHERE f.path = ?1",
+                [path],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<i64>> {
+        Ok(self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    pub fn set_meta(&self, key: &str, value: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// Full-text search over file names and folders. Each word matches as a prefix.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(String, i64)>> {
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>> {
         let terms: Vec<String> = fts_text(query)
             .split_whitespace()
             .map(|w| format!("\"{}\"*", w.replace('"', "")))
@@ -183,11 +237,14 @@ impl Db {
         if terms.is_empty() {
             return Ok(vec![]);
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT f.path, f.last_seen FROM files_fts JOIN files f ON f.id = files_fts.rowid
-             WHERE files_fts MATCH ?1 ORDER BY bm25(files_fts, 10.0, 1.0), f.last_seen DESC LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![terms.join(" "), limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let sql = format!(
+            "SELECT f.path, f.last_seen, {LAST_KIND} FROM files_fts JOIN files f ON f.id = files_fts.rowid
+             WHERE files_fts MATCH ?1 ORDER BY bm25(files_fts, 10.0, 1.0), f.last_seen DESC LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![terms.join(" "), limit as i64], |r| {
+            Ok(Hit { path: r.get(0)?, last_seen: r.get(1)?, last_kind: r.get(2)? })
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 }
@@ -227,8 +284,31 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].path, "C:/Docs/Budget 2026.docx");
         assert_eq!(t[0].events, 2);
-        assert_eq!(db.search("budg", 10).unwrap()[0].0, "C:/Docs/Budget 2026.docx");
+        assert_eq!(db.search("budg", 10).unwrap()[0].path, "C:/Docs/Budget 2026.docx");
         assert!(db.search("draft", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn recent_lists_newest_first_and_hides_deleted() {
+        let db = Db::in_memory().unwrap();
+        db.record("C:/a.txt", Kind::Created, "watcher", 1).unwrap();
+        db.record("C:/b.txt", Kind::Created, "watcher", 2).unwrap();
+        db.record("C:/c.txt", Kind::Created, "watcher", 3).unwrap();
+        db.record("C:/c.txt", Kind::Deleted, "watcher", 4).unwrap();
+        db.record("C:/a.txt", Kind::Modified, "watcher", 5).unwrap();
+        let hits = db.recent(10).unwrap();
+        let paths: Vec<_> = hits.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, ["C:/a.txt", "C:/b.txt"]);
+        assert_eq!(hits[0].last_kind, "modified");
+    }
+
+    #[test]
+    fn meta_values_round_trip() {
+        let db = Db::in_memory().unwrap();
+        assert_eq!(db.get_meta("last_alive").unwrap(), None);
+        db.set_meta("last_alive", 5).unwrap();
+        db.set_meta("last_alive", 9).unwrap();
+        assert_eq!(db.get_meta("last_alive").unwrap(), Some(9));
     }
 
     #[test]
@@ -238,6 +318,7 @@ mod tests {
         db.record("D:/Work/plot.png", Kind::Created, "watcher", 2).unwrap();
         let hits = db.search("thesis plot", 10).unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0, "D:/Uni/Thesis/figures/plot.png");
+        assert_eq!(hits[0].path, "D:/Uni/Thesis/figures/plot.png");
+        assert_eq!(hits[0].last_kind, "created");
     }
 }

@@ -1,0 +1,19 @@
+[package]
+name = "memstor-core"
+version.workspace = true
+edition.workspace = true
+description = "Records which files you work on and when, in a local SQLite database."
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+lnk = "0.6"
+notify = "8"
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+lnk = { version = "0.6", features = ["binwrite", "unstable-save"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

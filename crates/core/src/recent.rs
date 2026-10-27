@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn imports_shortcuts_as_opened_files() {
-        let tmp = std::env::temp_dir().join(format!("memstor-recent-{}", std::process::id()));
+        let tmp = crate::test_dir("recent");
         let docs = tmp.join("docs");
         let recent = tmp.join("recent");
         std::fs::create_dir_all(&docs).unwrap();

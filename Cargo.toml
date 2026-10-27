@@ -1,16 +1,13 @@
-[package]
-name = "memstor"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/cli", "app/src-tauri"]
+
+[workspace.package]
+version = "0.2.0"
 edition = "2024"
 
-[dependencies]
-anyhow = "1.0.104"
-chrono = "0.4.45"
-clap = { version = "4.6.7", features = ["derive"] }
-dirs = "7.0.0"
-lnk = "0.6"
-notify = "8"
-rusqlite = { version = "0.37", features = ["bundled"] }
-
-[dev-dependencies]
-lnk = { version = "0.6", features = ["binwrite", "unstable-save"] }
+[workspace.dependencies]
+memstor-core = { path = "crates/core" }
+anyhow = "1"
+chrono = "0.4"
+dirs = "7"

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MemStor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <input id="q" type="search" placeholder="Search files by name or folder…" autocomplete="off" spellcheck="false" autofocus>
+    <button id="rec" class="rec" type="button" title="Pause or resume recording"><span class="dot"></span><span id="rec-label">Recording</span></button>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-view="search" aria-selected="true">Recent &amp; search</button>
+    <button role="tab" data-view="0" aria-selected="false">Today</button>
+    <button role="tab" data-view="1" aria-selected="false">Yesterday</button>
+  </nav>
+
+  <main id="list" tabindex="-1" aria-live="polite"></main>
+
+  <footer class="hint">
+    <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+    <span><kbd>Enter</kbd> open</span>
+    <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> show in folder</span>
+    <span><kbd>Esc</kbd> hide</span>
+    <span id="hotkey" class="right"></span>
+  </footer>
+
+  <div id="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

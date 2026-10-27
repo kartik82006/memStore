@@ -2,60 +2,100 @@
 
 Find files on your computer by what you were doing, not only by what you named them.
 
-This is **M0**, a command-line test of the background collector. It quietly records which files
-you create, edit, rename and open, keeps that history in a local SQLite database, and lets you
-list what you touched on a given day or search by name and folder. Nothing leaves your computer.
+MemStor runs quietly in the Windows tray and records which files you create, edit, rename and
+open. Press **Ctrl+Shift+Space** anywhere to search that history or see what you worked on
+today. Everything stays in a local database on your PC. Nothing is sent anywhere.
 
 The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ
 
-## Try it on Windows
+![Search window](docs/search-window.png)
 
-```powershell
-# start recording (watches Desktop, Documents, Downloads + Windows Recent Items)
-memstor watch
+## Get it
 
-# in another window
-memstor today
-memstor day 2026-10-27
-memstor search thesis chapter
-```
+Every push builds Windows downloads on GitHub Actions. Open the latest run under
+**Actions → Build**, download `memstor-windows`, and run the `MemStor_…_x64-setup.exe` installer.
 
-Watch other folders with `--folder D:\Uni --folder D:\Work`. The database lives in
-`%LOCALAPPDATA%\MemStor\memstor.db` (change it with `--db`).
+## Using the tray app (M1)
+
+- MemStor starts hidden in the tray. **Left-click** the icon or press **Ctrl+Shift+Space** to open search.
+- Type part of a file name or a folder it was in. With an empty box you see your most recent files.
+- **Today** and **Yesterday** list every file you touched, with the time span and what happened.
+- **Enter** opens the file, **Ctrl+Enter** shows it in Explorer, **Esc** hides the window.
+- Pause or resume recording from the button in the window or the tray menu.
+- Closing the window keeps MemStor running. Quit from the tray menu.
+- Start it with `memstor-app.exe --show` to open the window right away.
 
 ## What it records
 
 | Source | Gives us | Needs admin? |
 | --- | --- | --- |
-| Folder watcher | files created, saved, renamed, deleted in watched folders | no |
+| Folder watcher | files created, edited, renamed, deleted | no |
+| Catch-up scan at start | files edited while MemStor was closed (first run: last 14 days) | no |
 | Recent Items (`%APPDATA%\Microsoft\Windows\Recent`) | files you opened anywhere on disk | no |
 
-It skips noise: Office lock files (`~$x.docx`), temp and partial downloads, hidden files,
-`node_modules`, `.git`, build output and AppData. A save done through a temp file
-(`A1B2.tmp` renamed over `report.docx`) counts as an edit of `report.docx`, and a rename
-keeps the file's history.
+**Where it looks:** every folder in your user folder (Desktop, Documents, Downloads, Pictures,
+OneDrive…) except AppData and hidden tool folders like `.vscode`, plus other fixed drives (D:, E:…).
+Windows, Program Files and ProgramData are skipped.
 
-Only paths, names and times are stored. File contents are never read.
+**Which files:** only everyday file types for now. The list is `TRACKED_TYPES` in
+`crates/core/src/filter.rs`:
 
-## Build
+| Kind | Extensions |
+| --- | --- |
+| Documents | doc docx odt rtf txt md pdf epub pages tex |
+| Spreadsheets | xls xlsx xlsm ods csv tsv numbers |
+| Presentations | ppt pptx odp key |
+| Images | jpg jpeg png gif bmp webp heic heif tif tiff svg psd ai |
+| Audio | mp3 wav m4a aac flac ogg wma |
+| Video | mp4 mov avi mkv webm wmv m4v |
+| Archives | zip rar 7z |
 
-```bash
-cargo test
-cargo build --release
-# Windows .exe from Linux:
-rustup target add x86_64-pc-windows-gnu   # needs gcc-mingw-w64-x86-64
-cargo build --release --target x86_64-pc-windows-gnu
+It also skips Office lock files (`~$x.docx`), temp and partial downloads, `node_modules` and build
+output. Saving through a temp file, as Word and Excel do, counts as one edit of the real file, and a
+rename keeps the file's history. Only paths, names and times are stored. File contents are never read.
+
+The database is `%LOCALAPPDATA%\MemStor\memstor.db`.
+
+## Command line
+
+The `memstor` CLI reads and writes the same database:
+
+```powershell
+memstor watch                 # record without the tray app
+memstor today
+memstor day 2026-10-27
+memstor search thesis chapter
 ```
 
 ## Layout
 
-- `src/filter.rs` decides what counts as noise
-- `src/db.rs` SQLite schema, recording, day listing, full-text search (FTS5)
-- `src/recent.rs` reads Windows Recent Items shortcuts
-- `src/watch.rs` turns folder-watcher events into records
-- `src/main.rs` the command line
+```
+crates/core      collector + database (shared)
+  src/filter.rs    what counts as noise
+  src/db.rs        SQLite schema, recording, day listing, full-text search
+  src/recent.rs    Windows Recent Items shortcuts
+  src/watch.rs     folder watcher, pause/stop control
+crates/cli       the `memstor` command
+app/src-tauri    the tray app (Tauri 2): tray menu, hotkey, commands for the window
+app/ui           the search window (plain HTML/CSS/JS, no build step)
+```
 
-## Next (M1)
+## Build
 
-Wrap this in a Tauri 2 app: tray icon with pause, a hotkey search window, and a
-today/yesterday timeline. Active-window titles come in as an opt-in signal.
+```bash
+cargo test -p memstor-core -p memstor-cli
+cargo build --release -p memstor-cli
+
+# tray app + installer (on Windows)
+cd app
+npx @tauri-apps/cli@2 build        # or `npx @tauri-apps/cli@2 dev` while working on it
+```
+
+On Linux the app needs `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev`.
+
+## Next
+
+- M2: projects. Name a project, let MemStor suggest one from folders you use together, and
+  gather "everything I used for Project A today" into a folder of shortcuts.
+- Active-window titles as an opt-in signal.
+- Start with Windows (autostart) and a settings page for watched folders.

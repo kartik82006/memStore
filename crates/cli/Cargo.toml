@@ -1,0 +1,14 @@
+[package]
+name = "memstor-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "memstor"
+path = "src/main.rs"
+
+[dependencies]
+memstor-core.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
