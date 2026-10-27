@@ -56,6 +56,12 @@ enum Cmd {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Show the activities (groups of related files) MemStor found for a day (default today)
+    Activities {
+        /// YYYY-MM-DD
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// Import Windows' Recent Items once
     ScanRecent {
         /// Folder of .lnk shortcuts (defaults to the Windows Recent folder)
@@ -181,6 +187,22 @@ fn main() -> Result<()> {
             println!("Made {} shortcut(s) in {}", g.linked, g.folder.display());
             if !g.missing.is_empty() {
                 println!("Skipped {} file(s) that no longer exist.", g.missing.len());
+            }
+            Ok(())
+        }
+        Cmd::Activities { date } => {
+            let date = parse_date(date)?;
+            let (start, end) = day_bounds(date)?;
+            let acts = db.activities(start, end, dirs::home_dir().as_deref())?;
+            if acts.is_empty() {
+                println!("No activities found on {date}.");
+            }
+            for a in acts {
+                println!("{} ({} files)", a.label, a.files.len());
+                for f in a.files {
+                    println!("    {}", f.path);
+                }
+                println!();
             }
             Ok(())
         }

@@ -42,6 +42,22 @@ Open the **Projects** tab:
 From the command line: `memstor projects`, `memstor project-add Thesis --folder D:\Uni\Thesis`,
 `memstor project-files Thesis`, `memstor gather Thesis --date 2026-10-27`.
 
+## Activities: related files found for you
+
+No folders to set up. The **Activities** tab groups files you used together for one piece of work,
+like a video edit (the editor's project file, the footage, music from Downloads, the export) or a
+deck with the spreadsheet and photos it uses. Each activity can be gathered into a folder of
+shortcuts or saved as a project.
+
+MemStor works it out only from what it already records: work sessions (a pause of 20+ minutes ends
+one), files in the same project folder, shared words in file names, kinds of file that go
+together, files used within 5 minutes of each other, and files used together on earlier days.
+Hover a file and click × if it doesn't belong; MemStor won't group those files again.
+
+![Activities tab](docs/activities-tab.png)
+
+From the command line: `memstor activities --date 2026-10-27`.
+
 ## What it records
 
 | Source | Gives us | Needs admin? |

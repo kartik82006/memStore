@@ -8,6 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub(crate) const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS not_related (
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    PRIMARY KEY (a, b)
+);
 CREATE TABLE IF NOT EXISTS projects (
     id      INTEGER PRIMARY KEY,
     name    TEXT NOT NULL UNIQUE COLLATE NOCASE,

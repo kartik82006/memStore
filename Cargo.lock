@@ -2342,6 +2342,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dirs",
  "memstor-core",
 ]
 

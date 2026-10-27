@@ -8,6 +8,7 @@ name = "memstor"
 path = "src/main.rs"
 
 [dependencies]
+dirs = { workspace = true }
 memstor-core.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
