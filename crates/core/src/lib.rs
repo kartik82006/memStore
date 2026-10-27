@@ -1,6 +1,7 @@
 //! MemStor core: the background collector and the local database it writes to.
 //! Shared by the command-line tool and the tray app.
 
+pub mod activities;
 pub mod db;
 pub mod filter;
 pub mod gather;

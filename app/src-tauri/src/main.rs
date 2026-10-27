@@ -305,6 +305,77 @@ fn gather_files(id: i64, range: String, paths: Vec<String>, app: AppHandle, stat
     Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
 }
 
+// ---------- activities ----------
+
+#[derive(Serialize)]
+struct ActivityDto {
+    label: String,
+    work: &'static str,
+    topic: String,
+    start: i64,
+    end: i64,
+    files: Vec<DayRow>,
+}
+
+#[tauri::command]
+fn list_activities(range: String, state: State<AppState>) -> Result<Vec<ActivityDto>, String> {
+    let (start, end, _) = range_bounds(&range)?;
+    let db = state.db.lock().map_err(err)?;
+    Ok(db
+        .activities(start, end, dirs_home().as_deref())
+        .map_err(err)?
+        .into_iter()
+        .map(|a| ActivityDto {
+            label: a.label,
+            work: a.work.as_str(),
+            topic: a.topic,
+            start: a.start,
+            end: a.end,
+            files: a.files.into_iter().map(to_day_row).collect(),
+        })
+        .collect())
+}
+
+/// The user says `path` does not belong with `others`; remember it.
+#[tauri::command]
+fn drop_from_activity(path: String, others: Vec<String>, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.mark_not_related(&path, &others).map_err(err)
+}
+
+#[tauri::command]
+fn gather_activity(title: String, range: String, paths: Vec<String>, app: AppHandle) -> Result<GatherDto, String> {
+    if paths.is_empty() {
+        return Err("Pick at least one file to gather.".into());
+    }
+    let (_, _, label) = range_bounds(&range)?;
+    let g = gather::gather(&paths, &gather::default_root(), &format!("{title} {label}")).map_err(err)?;
+    let folder = g.folder.display().to_string();
+    let _ = app.opener().open_path(&folder, None::<&str>);
+    Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
+}
+
+/// Make a project from an activity: its name plus the specific folders its files are in.
+#[tauri::command]
+fn save_activity_as_project(name: String, paths: Vec<String>, state: State<AppState>) -> Result<i64, String> {
+    let home = dirs_home();
+    let mut folders: Vec<String> = paths
+        .iter()
+        .filter_map(|p| memstor_core::projects::project_folder_for(std::path::Path::new(p), home.as_deref()))
+        .map(|f| f.display().to_string())
+        .collect();
+    folders.sort();
+    folders.dedup();
+    if folders.is_empty() {
+        return Err("These files sit in general folders like Downloads, so there is no project folder to save. Use Gather instead.".into());
+    }
+    let db = state.db.lock().map_err(err)?;
+    let id = db.create_project(&name).map_err(err)?;
+    for f in &folders {
+        db.add_project_folder(id, f).map_err(err)?;
+    }
+    Ok(id)
+}
+
 fn apply_paused(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     state.control.set_paused(paused);
@@ -434,6 +505,10 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            list_activities,
+            drop_from_activity,
+            gather_activity,
+            save_activity_as_project,
             search,
             day,
             open_file,

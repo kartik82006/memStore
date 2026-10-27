@@ -20,6 +20,9 @@ pub const TRACKED_TYPES: &[(&str, &[&str])] = &[
     ("Audio", &["mp3", "wav", "m4a", "aac", "flac", "ogg", "wma"]),
     ("Video", &["mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v"]),
     ("Archives", &["zip", "rar", "7z"]),
+    // Project files from editing apps: Premiere, After Effects, DaVinci Resolve, Vegas, Kdenlive,
+    // Final Cut XML, Windows Movie Maker, Audacity, Ableton, FL Studio, Blender, subtitles.
+    ("Creative projects", &["prproj", "aep", "drp", "veg", "kdenlive", "fcpxml", "wlmp", "aup3", "als", "flp", "blend", "srt"]),
 ];
 
 /// True when the file's extension is one of the tracked types.

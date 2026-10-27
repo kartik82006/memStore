@@ -10,7 +10,7 @@ const recLabel = document.getElementById("rec-label");
 const toast = document.getElementById("toast");
 const tabs = [...document.querySelectorAll(".tabs button")];
 
-let view = "search"; // "search", "projects", or days ago as a string ("0", "1")
+let view = "search"; // "search", "activities", "projects", or days ago as a string ("0", "1")
 let rows = [];
 let sel = 0;
 let paused = false;
@@ -95,6 +95,11 @@ function render() {
   });
 }
 
+// Projects and Activities are panels with their own controls, not a keyboard list.
+function isPanel() {
+  return view === "projects" || view === "activities";
+}
+
 function select(i) {
   if (!rows.length) return;
   sel = Math.max(0, Math.min(rows.length - 1, i));
@@ -105,9 +110,9 @@ function select(i) {
 // ---------- data ----------
 
 async function load() {
-  if (view === "projects") {
+  if (view === "projects" || view === "activities") {
     document.body.classList.add("projects-view");
-    return window.Projects.show(list);
+    return view === "projects" ? window.Projects.show(list) : window.Activities.show(list);
   }
   document.body.classList.remove("projects-view");
   try {
@@ -155,7 +160,7 @@ q.addEventListener("input", () => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (view === "projects") {
+  if (view === "projects" || view === "activities") {
     // Typing in a project's name box must not trigger list shortcuts.
     if (e.key === "Escape" && e.target.tagName !== "INPUT") invoke("hide_window");
     return;
@@ -170,14 +175,14 @@ document.addEventListener("keydown", (e) => {
 
 tabs.forEach((t) => t.addEventListener("click", () => {
   setView(t.dataset.view);
-  if (t.dataset.view !== "projects") q.focus();
+  if (!isPanel()) q.focus();
 }));
 
 recBtn.addEventListener("click", () => invoke("set_paused", { paused: !paused }));
 
 listen("paused-changed", (e) => { setPausedUi(e.payload); if (view !== "search") load(); });
-listen("window-shown", () => { if (view !== "projects") { q.focus(); q.select(); } load(); });
-window.addEventListener("focus", () => { if (view !== "projects") q.focus(); });
+listen("window-shown", () => { if (!isPanel()) { q.focus(); q.select(); } load(); });
+window.addEventListener("focus", () => { if (!isPanel()) q.focus(); });
 
 // ---------- start ----------
 
