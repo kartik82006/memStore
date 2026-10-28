@@ -247,3 +247,4 @@ body.projects-view .hint { display: none; }
 .st-spend.full > div { background: var(--paused); }
 .st-sec > p { margin: 0; }
 .ask[hidden] { display: none; }
+.ask span[hidden] { display: none; }

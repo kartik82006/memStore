@@ -3,7 +3,7 @@
 
 (() => {
   const KEEP = [[90, "3 months"], [180, "6 months"], [365, "1 year"], [0, "Forever"]];
-  const st = { s: null, c: null, confirmWipe: false, confirmForget: false, confirmCloud: false, showWatching: false, busy: false, keyDraft: "", checking: false };
+  const st = { s: null, c: null, confirmWipe: false, confirmForget: false, showWatching: false, busy: false, keyDraft: "", checking: false };
   let poll;
   let root;
 
@@ -74,18 +74,8 @@
     );
     if (!c) return sec;
 
-    const on = el("label", "st-toggle");
-    const cb = el("input");
-    cb.type = "checkbox";
-    cb.checked = c.on;
-    cb.addEventListener("change", () => {
-      if (cb.checked && !c.on) { st.confirmCloud = true; render(); return; }
-      act(() => invoke("set_cloud_on", { on: false }));
-    });
-    on.append(cb, el("span", null, "Describe my files with Claude"));
-    sec.append(on);
-
-    if (st.confirmCloud) {
+    // Shown until it's on, so the choice is made knowing what is sent.
+    if (!c.on) {
       const box = el("div", "st-confirm");
       const ul = el("ul", "st-facts");
       [
@@ -95,16 +85,18 @@
         "You pay Anthropic with your own API key. MemStor stops at $5 for the first pass, then $1 a month, and asks before spending more.",
       ].forEach((t) => ul.append(el("li", null, t)));
       box.append(ul);
-      const row = el("div", "st-row");
-      row.append(
-        button("Turn on", "btn primary", () => act(async () => { await invoke("set_cloud_on", { on: true }); st.confirmCloud = false; })),
-        button("Cancel", "btn", () => { st.confirmCloud = false; render(); })
-      );
-      box.append(row);
       sec.append(box);
-      return sec;
     }
-    if (!c.on) return sec;
+
+    if (c.has_key) {
+      const on = el("label", "st-toggle");
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = c.on;
+      cb.addEventListener("change", () => act(() => invoke("set_cloud_on", { on: cb.checked })));
+      on.append(cb, el("span", null, "Describe my files with Claude"));
+      sec.append(on);
+    }
 
     // API key
     sec.append(el("h4", null, "Claude API key"));
@@ -124,7 +116,8 @@
       input.value = st.keyDraft.trim();
       input.setAttribute("aria-label", "Claude API key");
       input.addEventListener("input", () => (st.keyDraft = input.value || " "));
-      const save = button(st.checking ? "Checking…" : "Save and test", "btn small primary", () => form.requestSubmit());
+      const label = c.has_key ? "Save and test" : "Save key and turn on";
+      const save = button(st.checking ? "Checking…" : label, "btn small primary", () => form.requestSubmit());
       save.disabled = st.checking;
       form.append(input, save);
       if (c.has_key) form.append(button("Cancel", "btn small", () => { st.keyDraft = ""; render(); }));
@@ -134,8 +127,9 @@
         render();
         try {
           await invoke("set_api_key", { key: input.value });
+          if (!c.has_key) await invoke("set_cloud_on", { on: true });
           st.keyDraft = "";
-          showToast("Key works. Describing starts when you step away from the PC.");
+          showToast("Key works and Search by memory is on. Describing starts when you step away from the PC.");
         } catch (err) {
           showToast(String(err));
         } finally {
@@ -149,7 +143,7 @@
     }
     if (c.key_problem) sec.append(el("p", "st-warn", c.key_problem));
 
-    if (!c.has_key) return sec;
+    if (!c.has_key || !c.on) return sec;
 
     // Progress
     sec.append(el("h4", null, "Progress"));
@@ -271,6 +265,8 @@
       return;
     }
 
+    wrap.append(cloudSection());
+
     // Recording
     const rec = section("Recording");
     const auto = el("label", "st-toggle");
@@ -306,8 +302,6 @@
       )
     );
     wrap.append(rec);
-
-    wrap.append(cloudSection());
 
     // Never record
     const ex = section("Never record", "Files in these folders are never recorded. Adding a folder also deletes what MemStor already recorded there.");

@@ -170,9 +170,12 @@ async function ask() {
 }
 
 function updateAsk() {
-  const show = cloudReady && view === "search" && q.value.trim().split(/\s+/).length >= 2;
-  askBtn.hidden = !show;
-  askHint.hidden = !show;
+  const question = view === "search" && q.value.trim().split(/\s+/).length >= 2;
+  askBtn.hidden = !question;
+  askHint.hidden = !(question && cloudReady);
+  // Not set up yet: the same button leads to the API key in Settings.
+  askBtn.firstChild.textContent = cloudReady ? "Ask AI " : "Set up Ask AI ";
+  askBtn.lastElementChild.hidden = !cloudReady;
 }
 
 async function refreshCloud() {
@@ -312,7 +315,7 @@ tabs.forEach((t) => t.addEventListener("click", () => {
   if (!isPanel()) q.focus();
 }));
 
-askBtn.addEventListener("click", () => { ask(); q.focus(); });
+askBtn.addEventListener("click", () => { if (cloudReady) { ask(); q.focus(); } else setView("settings"); });
 recBtn.addEventListener("click", () => invoke("set_paused", { paused: !paused }));
 
 listen("paused-changed", (e) => { setPausedUi(e.payload); if (view !== "search") load(); });
