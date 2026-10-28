@@ -8,7 +8,8 @@
 </head>
 <body>
   <header class="bar">
-    <input id="q" type="search" placeholder="Search files by name or folder…" autocomplete="off" spellcheck="false" autofocus>
+    <input id="q" type="search" placeholder="Search files, or ask: the edit I made before Diwali…" autocomplete="off" spellcheck="false" autofocus>
+    <button id="ask" class="ask" type="button" hidden title="Search by memory with Claude (Shift+Enter)">Ask AI <span><kbd>Shift</kbd>+<kbd>Enter</kbd></span></button>
     <button id="rec" class="rec" type="button" title="Pause or resume recording"><span class="dot"></span><span id="rec-label">Recording</span></button>
   </header>
 
@@ -18,6 +19,7 @@
     <button role="tab" data-view="1" aria-selected="false">Yesterday</button>
     <button role="tab" data-view="activities" aria-selected="false">Activities</button>
     <button role="tab" data-view="projects" aria-selected="false">Projects</button>
+    <button role="tab" data-view="settings" aria-selected="false" class="tab-right">Settings</button>
   </nav>
 
   <main id="list" tabindex="-1" aria-live="polite"></main>
@@ -27,11 +29,14 @@
     <span><kbd>Enter</kbd> open</span>
     <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> show in folder</span>
     <span><kbd>Esc</kbd> hide</span>
+    <span id="ask-hint" hidden><kbd>Shift</kbd>+<kbd>Enter</kbd> ask AI</span>
     <span id="hotkey" class="right"></span>
   </footer>
 
   <div id="toast" role="status" hidden></div>
   <script src="app.js"></script>
+  <script src="memories.js"></script>
+  <script src="settings.js"></script>
   <script src="projects.js"></script>
   <script src="activities.js"></script>
 </body>

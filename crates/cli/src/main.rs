@@ -62,6 +62,12 @@ enum Cmd {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Ask about past work in plain words, e.g. "the edit I made before Diwali"
+    Recall {
+        question: Vec<String>,
+    },
+    /// Save finished days' activities as memories now (the app does this by itself)
+    Remember,
     /// Import Windows' Recent Items once
     ScanRecent {
         /// Folder of .lnk shortcuts (defaults to the Windows Recent folder)
@@ -204,6 +210,28 @@ fn main() -> Result<()> {
                 }
                 println!();
             }
+            Ok(())
+        }
+        Cmd::Recall { question } => {
+            let (q, found) = db.recall(&question.join(" "), 8)?;
+            println!("Looking for: {q:?}\n");
+            if found.is_empty() {
+                println!("No memories match.");
+            }
+            for r in found {
+                let m = r.memory;
+                let day = |ts: i64| Local.timestamp_opt(ts, 0).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                println!("{} ({} to {}, {} min over {} days) [{}]", m.label, day(m.start), day(m.end), m.active_minutes, m.days, r.why.join("; "));
+                for f in m.files {
+                    println!("    {f}");
+                }
+                println!();
+            }
+            Ok(())
+        }
+        Cmd::Remember => {
+            let n = db.remember_finished_days()?;
+            println!("Saved {n} activit{} as memories.", if n == 1 { "y" } else { "ies" });
             Ok(())
         }
         Cmd::ScanRecent { dir } => {

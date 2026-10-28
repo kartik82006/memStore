@@ -2,12 +2,24 @@
 //! Shared by the command-line tool and the tray app.
 
 pub mod activities;
+pub mod claude;
+pub mod cloud;
+pub mod crypto;
 pub mod db;
+pub mod extract;
 pub mod filter;
 pub mod gather;
+pub mod groups;
+pub mod memory;
 pub mod projects;
+pub mod recall;
 pub mod recent;
+pub mod settings;
 pub mod watch;
+#[cfg(windows)]
+mod winthumb;
+#[cfg(windows)]
+mod winvideo;
 
 use std::path::PathBuf;
 
