@@ -28,7 +28,10 @@ pub(crate) struct Mf {
     pub(crate) create_attributes: CreateAttributesFn,
     pub(crate) create_media_type: CreateMediaTypeFn,
     create_reader: CreateReaderFn,
+    // Kept for the test, which encodes a clip with more Media Foundation functions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) mfplat: windows::Win32::Foundation::HMODULE,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) mfreadwrite: windows::Win32::Foundation::HMODULE,
 }
 
