@@ -59,6 +59,7 @@ impl Db {
         };
         let gone: Vec<(i64, String)> = ids.into_iter().filter(|(_, p)| same_path(p, folder) || is_inside(p, folder)).collect();
         self.forget_files(&gone)?;
+        self.forget_descriptions_in(folder, "local", "in a folder you never record")?;
         Ok(gone.len())
     }
 
@@ -139,6 +140,7 @@ impl Db {
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('collector_alive_at', ?1)", params![now])?;
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('memories_next_day', ?1)", params![now])?;
         tx.commit()?;
+        self.forget_cloud_descriptions()?;
         // Shrink the file so deleted data doesn't linger on disk.
         self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
         Ok(())

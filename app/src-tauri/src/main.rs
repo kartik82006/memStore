@@ -6,6 +6,7 @@
 
 use chrono::{Duration, Local, TimeZone};
 use memstor_core::db::Db;
+use memstor_core::cloud::{self, Worker};
 use memstor_core::watch::{self, Control};
 use memstor_core::projects::{DEFAULT_NEARBY_MINUTES, Reason};
 use memstor_core::{default_db_path, gather, recent};
@@ -29,6 +30,8 @@ struct AppState {
     db: Mutex<Db>,
     /// The running collector; replaced when the watched folders change.
     collector: Mutex<(Arc<Control>, Vec<PathBuf>)>,
+    /// The cloud describer; restarted with the collector.
+    cloud: Mutex<Arc<Worker>>,
     db_path: PathBuf,
     pause_item: MenuItem<Wry>,
     hotkey_ok: Mutex<bool>,
@@ -40,6 +43,9 @@ impl AppState {
     }
     fn folders(&self) -> Vec<PathBuf> {
         self.collector.lock().map(|c| c.1.clone()).unwrap_or_default()
+    }
+    fn worker(&self) -> Arc<Worker> {
+        self.cloud.lock().map(|w| w.clone()).unwrap_or_default()
     }
 }
 
@@ -410,11 +416,14 @@ struct MemoryDto {
     late_minutes: i64,
     days: i64,
     why: Vec<String>,
+    /// A one-line story written by the cloud, if any.
+    story: Option<String>,
     files: Vec<MemoryFileDto>,
 }
 
-fn to_memory_dto(m: memstor_core::memory::Memory, why: Vec<String>) -> MemoryDto {
+fn to_memory_dto(db: &Db, m: memstor_core::memory::Memory, why: Vec<String>) -> MemoryDto {
     MemoryDto {
+        story: db.memory_story(m.id).ok().flatten(),
         files: m
             .files
             .iter()
@@ -459,13 +468,13 @@ fn recall(query: String, state: State<AppState>) -> Result<RecallDto, String> {
         understood.push("late at night".into());
     }
     understood.extend(q.words.iter().map(|w| format!("\"{w}\"")));
-    Ok(RecallDto { understood, results: found.into_iter().map(|r| to_memory_dto(r.memory, r.why)).collect() })
+    Ok(RecallDto { understood, results: found.into_iter().map(|r| to_memory_dto(&db, r.memory, r.why)).collect() })
 }
 
 #[tauri::command]
 fn list_memories(state: State<AppState>) -> Result<Vec<MemoryDto>, String> {
     let db = state.db.lock().map_err(err)?;
-    Ok(db.memories().map_err(err)?.into_iter().map(|m| to_memory_dto(m, Vec::new())).collect())
+    Ok(db.memories().map_err(err)?.into_iter().map(|m| to_memory_dto(&db, m, Vec::new())).collect())
 }
 
 #[tauri::command]
@@ -516,6 +525,9 @@ fn restart_collector(app: &AppHandle) -> Result<(), String> {
     let control = Arc::new(Control::default());
     control.set_paused(c.0.is_paused());
     start_collector(state.db_path.clone(), folders.clone(), control.clone());
+    let mut w = state.cloud.lock().map_err(err)?;
+    w.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    *w = start_cloud(state.db_path.clone(), folders.clone(), control.clone());
     *c = (control, folders);
     Ok(())
 }
@@ -594,6 +606,132 @@ fn wipe_history(state: State<AppState>) -> Result<(), String> {
     state.db.lock().map_err(err)?.wipe_history(Local::now().timestamp()).map_err(err)
 }
 
+// ---------- cloud descriptions ----------
+
+#[derive(Serialize)]
+struct CloudDto {
+    #[serde(flatten)]
+    status: cloud::CloudStatus,
+    /// The last four characters of the saved key, to show which one it is.
+    key_end: Option<String>,
+    local_only: Vec<String>,
+}
+
+#[tauri::command]
+fn cloud_status(state: State<AppState>) -> Result<CloudDto, String> {
+    let db = state.db.lock().map_err(err)?;
+    let key_end = db.api_key().map_err(err)?.map(|k| k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect());
+    Ok(CloudDto { status: db.cloud_status(&state.worker().state()).map_err(err)?, key_end, local_only: db.local_only_folders().map_err(err)? })
+}
+
+#[tauri::command]
+fn set_cloud_on(on: bool, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_cloud_on(on).map_err(err)
+}
+
+/// Check the key with a tiny call, then save it. A key that doesn't work is not saved.
+#[tauri::command]
+async fn set_api_key(key: String, app: AppHandle) -> Result<(), String> {
+    let key = key.trim().to_string();
+    if key.len() < 20 {
+        return Err("That doesn't look like a Claude API key. It starts with sk-ant-.".into());
+    }
+    let db_path = app.state::<AppState>().db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db = Db::open(&db_path).map_err(err)?;
+        cloud::check_key(&db, &key).map_err(err)?;
+        db.set_api_key(Some(&key)).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn clear_api_key(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_api_key(None).map_err(err)
+}
+
+/// Raise this period's cap by $1, once the user agrees.
+#[tauri::command]
+fn allow_more(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.allow_more().map_err(err)
+}
+
+/// Describe now, even while the PC is in use (still within the cap).
+#[tauri::command]
+fn index_now(state: State<AppState>) {
+    state.worker().force.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn rescan_library(state: State<AppState>) {
+    state.worker().rescan.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Files in this folder are never sent to the cloud. Returns how many descriptions were deleted.
+#[tauri::command]
+fn add_local_only_folder(folder: String, state: State<AppState>) -> Result<usize, String> {
+    state.db.lock().map_err(err)?.add_local_only_folder(&folder).map_err(err)
+}
+
+#[tauri::command]
+fn remove_local_only_folder(folder: String, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.remove_local_only_folder(&folder).map_err(err)
+}
+
+#[tauri::command]
+fn forget_cloud_descriptions(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_cloud_descriptions().map_err(err)
+}
+
+#[derive(Serialize)]
+struct FoundDto {
+    #[serde(flatten)]
+    found: cloud::Found,
+    name: String,
+    folder: String,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+struct SmartDto {
+    understood: Vec<String>,
+    results: Vec<FoundDto>,
+    local_only: Option<String>,
+    cost: String,
+}
+
+/// Search by memory. Runs on its own connection so the window stays responsive while
+/// Claude answers.
+#[tauri::command]
+async fn smart_search(question: String, app: AppHandle) -> Result<SmartDto, String> {
+    let db_path = app.state::<AppState>().db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<SmartDto, String> {
+        let db = Db::open(&db_path).map_err(err)?;
+        let a = db.smart_search(&question).map_err(err)?;
+        Ok(SmartDto {
+            understood: a.understood,
+            local_only: a.local_only,
+            cost: match a.micro_usd {
+                0 => String::new(),
+                m if m < 10_000 => "less than 1 cent".into(),
+                m => memstor_core::claude::dollars(m),
+            },
+            results: a
+                .results
+                .into_iter()
+                .map(|f| {
+                    let (name, folder) = f.path.as_deref().map(split).unwrap_or_default();
+                    let exists = f.path.as_deref().is_some_and(|p| Path::new(p).exists());
+                    FoundDto { found: f, name, folder, exists }
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(err)?
+}
+
 fn apply_paused(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
     state.control().set_paused(paused);
@@ -621,6 +759,21 @@ fn toggle_window(app: &AppHandle) {
             show_window(app);
         }
     }
+}
+
+/// Starts the cloud describer on its own thread with its own connection. It does nothing
+/// until cloud descriptions are turned on and a key is saved.
+fn start_cloud(db_path: PathBuf, folders: Vec<PathBuf>, control: Arc<Control>) -> Arc<Worker> {
+    let worker = Arc::new(Worker::default());
+    let w = worker.clone();
+    std::thread::spawn(move || {
+        let db = match Db::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => return eprintln!("cloud worker could not open the database: {e}"),
+        };
+        cloud::run_worker(&db, &folders, &w, &control.paused);
+    });
+    worker
 }
 
 /// Starts the collector on its own thread with its own database connection.
@@ -684,7 +837,9 @@ fn main() {
                         apply_paused(app, !paused);
                     }
                     "quit" => {
-                        app.state::<AppState>().control().stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let state = app.state::<AppState>();
+                        state.control().stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        state.worker().stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         app.exit(0);
                     }
                     _ => {}
@@ -706,10 +861,12 @@ fn main() {
             };
 
             start_collector(db_path.clone(), folders.clone(), control.clone());
+            let worker = start_cloud(db_path.clone(), folders.clone(), control.clone());
             let start_visible = std::env::args().any(|a| a == "--show");
             app.manage(AppState {
                 db: Mutex::new(db),
                 collector: Mutex::new((control, folders)),
+                cloud: Mutex::new(worker),
                 db_path,
                 pause_item,
                 hotkey_ok: Mutex::new(hotkey_ok),
@@ -728,6 +885,17 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            cloud_status,
+            set_cloud_on,
+            set_api_key,
+            clear_api_key,
+            allow_more,
+            index_now,
+            rescan_library,
+            add_local_only_folder,
+            remove_local_only_folder,
+            forget_cloud_descriptions,
+            smart_search,
             get_settings,
             add_extra_folder,
             remove_extra_folder,

@@ -283,6 +283,7 @@ impl Db {
         self.conn.execute("DELETE FROM memory_files WHERE memory_id = ?1", [id])?;
         self.conn.execute("DELETE FROM memory_days WHERE memory_id = ?1", [id])?;
         self.conn.execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        self.conn.execute("DELETE FROM memory_stories WHERE memory_id = ?1", [id])?;
         Ok(())
     }
 }

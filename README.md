@@ -4,7 +4,8 @@ Find files on your computer by what you were doing, not only by what you named t
 
 MemStor runs quietly in the Windows tray and records which files you create, edit, rename and
 open. Press **Ctrl+Shift+Space** anywhere to search that history or see what you worked on
-today. Everything stays in a local database on your PC. Nothing is sent anywhere.
+today. Everything stays in an encrypted database on your PC. Nothing is sent anywhere unless you
+turn on **Search by memory (AI)**, which is off until you add your own Claude API key.
 
 The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ
 
@@ -77,12 +78,43 @@ All memories are listed under Activities → All memories.
 
 ![Memory search](docs/recall.png)
 
+## Search by memory (AI), optional
+
+Search the way you remember things: "video of a girl in pink doing yoga", "the edit for the
+organisation with alumni pics". Type the question and press **Shift+Enter** (or **Ask AI**).
+
+- **Off by default.** Turn it on in Settings and paste your own Claude API key
+  (console.anthropic.com). You pay Anthropic directly; MemStor has no server.
+- **What is sent:** a small preview (768 px at most) of each photo, one frame of each video, and up
+  to 3,000 words of each document's text, to the Claude API (Haiku 5.5). Claude writes a short
+  description: people and what they wear and do, place, objects, colours, visible text, event,
+  topic, who it was for.
+- **What is kept:** the descriptions, only on your PC, in the encrypted database. Your files never
+  leave the PC.
+- **Never sent:** files in "Never record" or "Keep on this PC" folders, screenshots, duplicates,
+  and documents that look like IDs, bank or card details, or passwords (Aadhaar, PAN and card
+  numbers are checked on the PC first).
+- **Spending limits:** $5 for the first pass over your files, then $1 a month. It stops at the
+  limit and asks before spending more ("Allow $1 more"). A search costs well under a cent.
+- **Runs when you are away:** describing waits until the PC has been idle for 2 minutes, unless you
+  press "Describe now".
+- **Searching:** Claude turns your sentence into dates, kinds of work and details; MemStor searches
+  the descriptions and memories on the PC; Claude then picks the best matches and says why. Without
+  a key, the local memory search above still works.
+- Memories also get a one-line story ("A four-day rush to cut the alumni meet video…").
+- "Delete all descriptions" removes them all; turning the feature off stops all sending.
+
+![Ask AI](docs/ask-ai.png)
+
+![Search by memory settings](docs/cloud-settings.png)
+
 ## Privacy and settings
 
-- Everything stays on your PC. MemStor makes no network connections.
+- Everything stays on your PC. With Search by memory off, MemStor makes no network connections.
 - The database is encrypted (SQLCipher). Its key is sealed with Windows DPAPI, so only your
   Windows account on this PC can open it. A database from an older version is encrypted on first start.
-- MemStor records file names, folders and times, never what is inside files.
+- MemStor records file names, folders and times. It reads inside files only to describe them when
+  Search by memory is on.
 - **Settings**: start with Windows (on by default), extra folders to watch, folders never to
   record (adding one also deletes its history), keep history for 3 months / 6 months / 1 year /
   forever, and delete all history.
@@ -116,7 +148,8 @@ Windows, Program Files and ProgramData are skipped.
 
 It also skips Office lock files (`~$x.docx`), temp and partial downloads, `node_modules` and build
 output. Saving through a temp file, as Word and Excel do, counts as one edit of the real file, and a
-rename keeps the file's history. Only paths, names and times are stored. File contents are never read.
+rename keeps the file's history. Only paths, names and times are stored, plus descriptions when
+Search by memory is on.
 
 The database is `%LOCALAPPDATA%\MemStor\memstor.db`.
 
@@ -142,6 +175,10 @@ crates/core      collector + database (shared)
   src/db.rs        SQLite schema, recording, day listing, full-text search
   src/recent.rs    Windows Recent Items shortcuts
   src/watch.rs     folder watcher, pause/stop control
+  src/memory.rs    memories (finished pieces of work), src/recall.rs local "do you remember" search
+  src/extract.rs   document text, photo dates, previews, privacy checks (all on the PC)
+  src/claude.rs    Claude API calls (describe, plan a search, rerank, stories)
+  src/cloud.rs     describe queue, spending limits, background worker, smart search
 crates/cli       the `memstor` command
 app/src-tauri    the tray app (Tauri 2): tray menu, hotkey, commands for the window
 app/ui           the search window (plain HTML/CSS/JS, no build step)

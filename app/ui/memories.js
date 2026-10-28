@@ -59,6 +59,7 @@
     }
     head.append(title, el("span", "ac-meta", `${span(m)} · ${effort(m)}`));
     box.append(head);
+    if (m.story) box.append(el("p", "mem-story", m.story));
 
     if (m.why.length) {
       const why = el("div", "mem-why");

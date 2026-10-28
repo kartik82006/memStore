@@ -9,6 +9,7 @@
 <body>
   <header class="bar">
     <input id="q" type="search" placeholder="Search files, or ask: the edit I made before Diwali…" autocomplete="off" spellcheck="false" autofocus>
+    <button id="ask" class="ask" type="button" hidden title="Search by memory with Claude (Shift+Enter)">Ask AI <kbd>Shift</kbd>+<kbd>Enter</kbd></button>
     <button id="rec" class="rec" type="button" title="Pause or resume recording"><span class="dot"></span><span id="rec-label">Recording</span></button>
   </header>
 
@@ -28,6 +29,7 @@
     <span><kbd>Enter</kbd> open</span>
     <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> show in folder</span>
     <span><kbd>Esc</kbd> hide</span>
+    <span id="ask-hint" hidden><kbd>Shift</kbd>+<kbd>Enter</kbd> ask AI</span>
     <span id="hotkey" class="right"></span>
   </footer>
 

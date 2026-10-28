@@ -124,7 +124,7 @@
     RANGES.forEach(([k, label]) =>
       seg.append(button(label, k === st.range ? "on" : "", () => { st.range = k; refresh(); }))
     );
-    top.append(seg, el("span", "pj-muted", "Grouped from when, where and how you used each file. Nothing leaves this PC."));
+    top.append(seg, el("span", "pj-muted", "Grouped on this PC from when, where and how you used each file."));
     wrap.append(top);
 
     if (st.range === "memories") {

@@ -9,6 +9,8 @@ const recBtn = document.getElementById("rec");
 const recLabel = document.getElementById("rec-label");
 const toast = document.getElementById("toast");
 const tabs = [...document.querySelectorAll(".tabs button")];
+const askBtn = document.getElementById("ask");
+const askHint = document.getElementById("ask-hint");
 
 let view = "search"; // "search", "activities", "projects", "settings", or days ago as a string ("0", "1")
 let rows = [];
@@ -17,6 +19,8 @@ let sel = 0;
 let paused = false;
 let watching = [];
 let searchTimer;
+let cloudReady = false; // cloud descriptions on with a working key
+let smart = null; // { question, loading, answer } for an "Ask AI" search
 
 // ---------- formatting ----------
 
@@ -89,8 +93,101 @@ function memoriesSection() {
   return sec;
 }
 
+// "Ask AI" results: files and memories Claude picked, each with why it matched.
+function smartSection() {
+  const sec = el("section", "mem-section smart");
+  const head = el("div", "mem-head");
+  if (smart.loading) {
+    head.append(el("strong", null, "Asking Claude…"), el("span", "mem-understood", "Reading your question and checking the best matches."));
+    sec.append(head);
+    return sec;
+  }
+  const a = smart.answer;
+  head.append(el("strong", null, a.results.length ? "Best matches" : "Nothing matches that memory yet"));
+  if (a.understood.length) {
+    const u = el("span", "mem-understood");
+    u.append("Looking for: ");
+    a.understood.forEach((w) => u.append(el("span", "chip", w)));
+    head.append(u);
+  }
+  sec.append(head);
+  if (a.local_only) sec.append(el("p", "st-warn", a.local_only));
+  a.results.forEach((f) => {
+    const card = el("article", "ac-card sm-card" + (f.path && !f.exists ? " gone" : ""));
+    const top = el("header", "ac-head");
+    const title = el("div", "ac-title");
+    title.append(el("span", "ac-work " + (f.path ? "files" : "memory"), f.path ? "File" : "Memory"));
+    title.append(el("h3", null, f.path ? f.name : f.title));
+    top.append(title, el("span", "ac-meta", when(f.date)));
+    card.append(top);
+    if (f.why) card.append(el("p", "sm-why", f.why));
+    if (f.summary) card.append(el("p", "sm-summary", f.summary));
+    if (f.path) {
+      const folder = el("div", "folder sm-folder");
+      folder.append(el("bdi", null, f.folder));
+      card.append(folder);
+    }
+    const bar = el("div", "ac-bar");
+    const act = (text, cls, fn) => {
+      const b = el("button", cls, text);
+      b.type = "button";
+      b.addEventListener("click", async () => { try { await fn(); } catch (e) { showToast(String(e)); } });
+      bar.append(b);
+    };
+    if (f.path && f.exists) {
+      act("Open", "btn primary", async () => { await invoke("open_file", { path: f.path }); invoke("hide_window"); });
+      act("Show in folder", "btn", async () => { await invoke("show_in_folder", { path: f.path }); invoke("hide_window"); });
+    } else if (f.path) {
+      bar.append(el("span", "pj-muted", "This file is no longer there."));
+    }
+    if (f.memory_id != null) {
+      act("Gather its files", f.path ? "btn" : "btn primary", async () => {
+        const g = await invoke("gather_memory", { id: f.memory_id });
+        showToast(`Made ${g.linked} shortcut(s) in ${g.folder}.`);
+      });
+    }
+    card.append(bar);
+    sec.append(card);
+  });
+  if (a.cost) sec.append(el("p", "pj-muted sm-cost", `This search cost ${a.cost}.`));
+  return sec;
+}
+
+async function ask() {
+  const question = q.value.trim();
+  if (!question || view !== "search") return;
+  smart = { question, loading: true };
+  render();
+  try {
+    const answer = await invoke("smart_search", { question });
+    if (smart?.question !== question) return;
+    smart = { question, loading: false, answer };
+  } catch (e) {
+    smart = null;
+    showToast(String(e));
+  }
+  render();
+}
+
+function updateAsk() {
+  const show = cloudReady && view === "search" && q.value.trim().split(/\s+/).length >= 2;
+  askBtn.hidden = !show;
+  askHint.hidden = !show;
+}
+
+async function refreshCloud() {
+  try {
+    const c = await invoke("cloud_status");
+    cloudReady = c.on && c.has_key && !c.key_problem;
+  } catch (_) {
+    cloudReady = false;
+  }
+  updateAsk();
+}
+
 function render() {
   list.replaceChildren();
+  if (view === "search" && smart && smart.question === q.value.trim()) list.append(smartSection());
   const showMemories = view === "search" && recalled && (recalled.results.length || recalled.understood.length);
   if (showMemories) list.append(memoriesSection());
   if (!rows.length) {
@@ -170,6 +267,8 @@ async function openSelected(inFolder) {
 
 function setView(v) {
   view = v;
+  if (v === "search") refreshCloud();
+  updateAsk();
   tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === v)));
   load();
 }
@@ -185,6 +284,8 @@ function setPausedUi(p) {
 
 q.addEventListener("input", () => {
   if (view !== "search") setView("search");
+  if (smart && smart.question !== q.value.trim()) smart = null;
+  updateAsk();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(load, 120);
 });
@@ -199,9 +300,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "ArrowDown") { e.preventDefault(); select(sel + 1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); select(sel - 1); }
+  else if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); if (cloudReady) ask(); }
   else if (e.key === "Enter") { e.preventDefault(); openSelected(e.ctrlKey); }
   else if (e.key === "Escape") {
-    if (q.value) { q.value = ""; load(); } else { invoke("hide_window"); }
+    if (q.value) { q.value = ""; smart = null; updateAsk(); load(); } else { invoke("hide_window"); }
   }
 });
 
@@ -210,10 +312,11 @@ tabs.forEach((t) => t.addEventListener("click", () => {
   if (!isPanel()) q.focus();
 }));
 
+askBtn.addEventListener("click", () => { ask(); q.focus(); });
 recBtn.addEventListener("click", () => invoke("set_paused", { paused: !paused }));
 
 listen("paused-changed", (e) => { setPausedUi(e.payload); if (view !== "search") load(); });
-listen("window-shown", () => { if (!isPanel()) { q.focus(); q.select(); } load(); });
+listen("window-shown", () => { if (!isPanel()) { q.focus(); q.select(); } refreshCloud(); load(); });
 window.addEventListener("focus", () => { if (!isPanel()) q.focus(); });
 
 // ---------- start ----------
@@ -227,5 +330,6 @@ window.addEventListener("focus", () => { if (!isPanel()) q.focus(); });
   } catch (e) {
     showToast(String(e));
   }
+  refreshCloud();
   load();
 })();
