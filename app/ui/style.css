@@ -198,3 +198,53 @@ body.projects-view .hint { display: none; }
 .ac-file .pj-x { visibility: hidden; }
 .ac-file:hover .pj-x, .ac-file .pj-x:focus-visible { visibility: visible; }
 .ac-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 4px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+
+/* ---------- memories ---------- */
+.mem-section { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 10px; user-select: text; }
+.mem-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 2px 4px; font-size: 13px; }
+.mem-understood { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; }
+.mem-why { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 4px 6px; }
+.mem-file { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 4px 10px; border-radius: 6px; }
+.mem-file:hover { background: var(--sel); }
+.mem-file .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-file .folder { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.mem-file.gone .name { text-decoration: line-through; color: var(--muted); }
+.mem-rename { display: inline-flex; gap: 6px; align-items: center; }
+.mem-rename input { font: 15px var(--ui); padding: 3px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 0; width: 220px; }
+
+/* ---------- settings ---------- */
+.tabs .tab-right { margin-left: auto; }
+.st { display: flex; flex-direction: column; gap: 6px; padding: 6px 4px 16px; max-width: 640px; user-select: text; }
+.st-sec { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.st-sec:last-child { border-bottom: none; }
+.st-sec h3 { margin: 0; font-size: 14px; }
+.st-sec h4 { margin: 6px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+.st-toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.st-toggle input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.st-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.st-facts { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.st-path { font: 12px var(--mono); word-break: break-all; }
+.st .pj-folders { max-width: 100%; }
+
+/* Search by memory (AI) */
+.ask { flex: none; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--ink); border-radius: 8px; padding: 6px 10px; font: 600 12px var(--ui); cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }
+.ask kbd { font-weight: 400; }
+.ask:hover { background: var(--accent); color: var(--bg); }
+.sm-card { display: flex; flex-direction: column; gap: 4px; }
+.sm-card.gone { opacity: 0.6; }
+.sm-why { margin: 0 4px; font-size: 13px; }
+.sm-summary { margin: 0 4px; font-size: 12px; color: var(--muted); }
+.sm-folder { padding: 0 4px; }
+.sm-cost { margin: 0 4px; font-size: 11px; }
+.mem-story { margin: 0 4px 6px; font-size: 13px; color: var(--muted); font-style: italic; }
+.st-confirm { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 10px 12px; max-width: 640px; }
+.st-input { min-width: 260px; flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: 13px var(--mono); }
+.st-key { font: 12px var(--mono); }
+.st-warn { margin: 0; color: var(--paused); font-size: 13px; }
+.st-bar { width: 260px; max-width: 100%; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.st-bar > div { height: 100%; background: var(--rec); border-radius: 99px; }
+.st-spend > div { background: var(--accent); }
+.st-spend.full > div { background: var(--paused); }
+.st-sec > p { margin: 0; }
+.ask[hidden] { display: none; }
+.ask span[hidden] { display: none; }

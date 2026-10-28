@@ -3,10 +3,10 @@
 // Uses invoke, el, hm, when, KIND_LABEL and showToast from app.js.
 
 (() => {
-  const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["week", "Last 7 days"]];
+  const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["week", "Last 7 days"], ["memories", "All memories"]];
   const SHOW_FILES = 6; // files shown before "Show all"
 
-  const st = { range: "today", list: [], open: new Set(), busy: false, loaded: false };
+  const st = { range: "today", list: [], memories: [], open: new Set(), busy: false, loaded: false };
   let root;
 
   function button(text, cls, onClick, title) {
@@ -31,7 +31,8 @@
 
   async function refresh() {
     try {
-      st.list = await invoke("list_activities", { range: st.range });
+      if (st.range === "memories") st.memories = await invoke("list_memories");
+      else st.list = await invoke("list_activities", { range: st.range });
     } catch (e) {
       st.list = [];
       showToast(String(e));
@@ -123,8 +124,23 @@
     RANGES.forEach(([k, label]) =>
       seg.append(button(label, k === st.range ? "on" : "", () => { st.range = k; refresh(); }))
     );
-    top.append(seg, el("span", "pj-muted", "Grouped from when, where and how you used each file. Nothing leaves this PC."));
+    top.append(seg, el("span", "pj-muted", "Grouped on this PC from when, where and how you used each file."));
     wrap.append(top);
+
+    if (st.range === "memories") {
+      if (st.loaded && !st.memories.length) {
+        const box = el("div", "empty");
+        box.append(el("strong", null, "No memories yet"));
+        box.append(
+          "Each night MemStor saves the day's activities as memories, with their dates and how much work went in. " +
+            "Then you can search for them in plain words, like \"the edit I made before Diwali\"."
+        );
+        wrap.append(box);
+      }
+      st.memories.forEach((m) => wrap.append(window.Memories.card(m, refresh)));
+      root.replaceChildren(wrap);
+      return;
+    }
 
     if (st.loaded && !st.list.length) {
       const box = el("div", "empty");
