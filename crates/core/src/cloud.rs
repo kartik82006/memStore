@@ -969,7 +969,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         assert_eq!(db.scan_library(&[dir.clone()], &stop).unwrap(), 2, "one photo and the notes");
         let status = |name: &str| -> (String, Option<String>) {
-            let p = dir.join(name).to_string_lossy().into_owned();
+            let p = name.split('/').fold(dir.clone(), |d, part| d.join(part)).to_string_lossy().into_owned();
             db.conn.query_row("SELECT status, reason FROM describe_queue WHERE path = ?1", [p], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
         };
         assert_eq!(status("Trip/Screenshot 2026-10-01.png").0, "skipped");
