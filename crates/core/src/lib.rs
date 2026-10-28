@@ -9,6 +9,7 @@ pub mod db;
 pub mod extract;
 pub mod filter;
 pub mod gather;
+pub mod groups;
 pub mod memory;
 pub mod projects;
 pub mod recall;
@@ -17,6 +18,8 @@ pub mod settings;
 pub mod watch;
 #[cfg(windows)]
 mod winthumb;
+#[cfg(windows)]
+mod winvideo;
 
 use std::path::PathBuf;
 

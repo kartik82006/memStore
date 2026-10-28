@@ -12,7 +12,7 @@
 //! asks before going over. Smart search turns a question into a plan, searches descriptions,
 //! file names and memories on the PC, and asks Claude to rerank the best few.
 
-use crate::claude::{CallError, Claude, Description, Spend};
+use crate::claude::{Request, CallError, Claude, Description, Spend};
 use crate::db::Db;
 use crate::extract::{self, Media};
 use crate::filter::is_noise_dir_name;
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS describe_queue (
     size        INTEGER NOT NULL DEFAULT 0,
     mtime       INTEGER NOT NULL DEFAULT 0,
     fingerprint TEXT,
-    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | done | local | skipped | error
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | batched | done | local | skipped | error
     reason      TEXT,
     tries       INTEGER NOT NULL DEFAULT 0,
     added       INTEGER NOT NULL
@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS descriptions (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS descriptions_fts USING fts5(name, text, tokenize = 'porter unicode61');
 CREATE TABLE IF NOT EXISTS spend (month TEXT PRIMARY KEY, micro_usd INTEGER NOT NULL);
+-- Batches sent to Anthropic and not collected yet. Their files are 'batched' in the queue,
+-- with the batch id as the reason. `discard` = the user deleted descriptions meanwhile.
+CREATE TABLE IF NOT EXISTS batches (
+    id       TEXT PRIMARY KEY,
+    created  INTEGER NOT NULL,
+    items    INTEGER NOT NULL,
+    reserved INTEGER NOT NULL,
+    discard  INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS memory_stories (
     memory_id INTEGER PRIMARY KEY,
     story     TEXT NOT NULL,
@@ -70,9 +79,16 @@ pub const MONTHLY_CAP: i64 = 1_000_000;
 /// "Allow $1 more" raises the current cap by this much.
 pub const ALLOW_STEP: i64 = 1_000_000;
 /// Don't start a call with less than this left (a large document costs about this much).
-const MIN_LEFT: i64 = 3_000;
+pub(crate) const MIN_LEFT: i64 = 3_000;
 /// Wait for this much keyboard and mouse quiet before describing (unless "Index now").
 const IDLE_SECS: u64 = 120;
+/// Send files in a batch (half price) once at least this many are waiting.
+const BATCH_MIN: i64 = 20;
+const BATCH_MAX: usize = 100;
+/// Money set aside per batched file until the real cost is known (a generous estimate).
+const BATCH_RESERVE: i64 = 400;
+/// How often to ask whether a batch has finished.
+const BATCH_POLL_SECS: i64 = 120;
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -80,6 +96,19 @@ fn now() -> i64 {
 
 fn month(ts: i64) -> String {
     Local.timestamp_opt(ts, 0).single().map(|d| d.format("%Y-%m").to_string()).unwrap_or_default()
+}
+
+fn file_mtime(p: &Path) -> i64 {
+    std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// "3 min 20 s", "45 s", "1 h 05 min".
+fn duration_text(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs} s"),
+        60..=3599 => format!("{} min {:02} s", secs / 60, secs % 60),
+        _ => format!("{} h {:02} min", secs / 3600, secs % 3600 / 60),
+    }
 }
 
 fn same_or_inside(path: &str, folder: &str) -> bool {
@@ -95,6 +124,8 @@ pub struct CloudStatus {
     /// What the worker is doing: off, no_key, scanning, waiting_idle, describing, cap, done, key_problem
     pub state: String,
     pub pending: i64,
+    /// Sent in a batch, waiting for Anthropic's answer.
+    pub in_batch: i64,
     pub described: i64,
     pub kept_local: i64,
     pub skipped: i64,
@@ -217,9 +248,11 @@ impl Db {
     /// Delete every cloud description and memory story. The files are not touched, and
     /// the queue starts over if the cloud is still on.
     pub fn forget_cloud_descriptions(&self) -> Result<()> {
-        for t in ["descriptions_fts", "descriptions", "describe_queue", "memory_stories"] {
+        for t in ["descriptions_fts", "descriptions", "describe_queue", "memory_stories", "label_groups"] {
             self.conn.execute(&format!("DELETE FROM {t}"), [])?;
         }
+        // Batches still at Anthropic are collected without keeping anything, then deleted there.
+        self.conn.execute("UPDATE batches SET discard = 1", [])?;
         for k in ["library_scanned", "first_index_done"] {
             self.set_kv(k, None)?;
         }
@@ -232,7 +265,7 @@ impl Db {
         Ok(self.kv("first_index_done")?.is_some())
     }
 
-    fn record_spend(&self, s: Spend) -> Result<()> {
+    pub(crate) fn record_spend(&self, s: Spend) -> Result<()> {
         if s.micro_usd == 0 {
             return Ok(());
         }
@@ -267,9 +300,9 @@ impl Db {
         self.set_kv(&key, Some(&v.to_string()))
     }
 
-    fn money_left(&self) -> Result<i64> {
+    pub(crate) fn money_left(&self) -> Result<i64> {
         let (spent, cap) = self.spend_and_cap()?;
-        Ok(cap - spent)
+        Ok(cap - spent - self.reserved()?)
     }
 
     // ---------- queue ----------
@@ -397,7 +430,7 @@ impl Db {
         Ok(())
     }
 
-    fn store_description(&self, path: &str, media: Media, d: &Description, facts: &extract::PhotoFacts, file_time: i64, spend: Spend) -> Result<()> {
+    pub(crate) fn store_description(&self, path: &str, media: Media, d: &Description, facts: &extract::PhotoFacts, file_time: i64, spend: Spend) -> Result<()> {
         let details = serde_json::to_string(d)?;
         let old: Option<i64> = self.conn.query_row("SELECT id FROM descriptions WHERE path = ?1", [path], |r| r.get(0)).optional()?;
         if let Some(id) = old {
@@ -431,6 +464,7 @@ impl Db {
             key_problem: self.kv("key_problem")?,
             state: state.to_string(),
             pending: count("pending")?,
+            in_batch: count("batched")?,
             described: self.conn.query_row("SELECT count(*) FROM descriptions", [], |r| r.get(0))?,
             kept_local: count("local")?,
             skipped: count("skipped")?,
@@ -444,69 +478,83 @@ impl Db {
 
     // ---------- describing ----------
 
-    /// Describe one file. Returns Err only for problems that should stop the worker for a while.
-    fn describe_one(&self, claude: &Claude, path: &str, media: Media) -> Result<(), CallError> {
+    /// Read a file on the PC and build the request that describes it. Returns None when the file
+    /// was settled without the cloud (gone, private, unreadable, too small); its status is set.
+    fn prepare(&self, path: &str, media: Media) -> Result<Option<Request>> {
         let p = Path::new(path);
-        let fail = |e: anyhow::Error| CallError::Retry(e.to_string());
         if !p.exists() {
-            self.set_status(path, "skipped", Some("no longer there")).map_err(fail)?;
-            return Ok(());
+            self.set_status(path, "skipped", Some("no longer there"))?;
+            return Ok(None);
         }
-        if let Some(r) = self.kept_local_by_folder(path).map_err(fail)? {
-            self.set_status(path, "local", Some(&r)).map_err(fail)?;
-            return Ok(());
+        if let Some(r) = self.kept_local_by_folder(path)? {
+            self.set_status(path, "local", Some(&r))?;
+            return Ok(None);
         }
-        let mtime = std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let mtime = file_mtime(p);
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let folder = p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut facts = extract::PhotoFacts::default();
-        let result = match media {
+        match media {
             Media::Document => {
                 let text = match extract::document_text(p) {
                     Ok(t) => t,
                     Err(e) => {
-                        self.set_status(path, "skipped", Some(&e.to_string())).map_err(fail)?;
-                        return Ok(());
+                        self.set_status(path, "skipped", Some(&e.to_string()))?;
+                        return Ok(None);
                     }
                 };
                 if let Some(r) = extract::private_reason(p, &text) {
-                    self.set_status(path, "local", Some(&format!("kept on this PC: {r}"))).map_err(fail)?;
-                    return Ok(());
+                    self.set_status(path, "local", Some(&format!("kept on this PC: {r}")))?;
+                    return Ok(None);
                 }
                 if text.split_whitespace().count() < 5 {
-                    self.set_status(path, "skipped", Some("no readable text")).map_err(fail)?;
-                    return Ok(());
+                    self.set_status(path, "skipped", Some("no readable text"))?;
+                    return Ok(None);
                 }
                 let context = format!("name \"{name}\", folder \"{folder}\", last changed {}", date_text(mtime));
-                claude.describe_document(&text, &context)
+                Ok(Some(Claude::document_request(&text, &context)))
             }
             Media::Photo | Media::Video => {
                 if let Some(r) = extract::private_reason(p, "") {
-                    self.set_status(path, "local", Some(&format!("kept on this PC: {r}"))).map_err(fail)?;
-                    return Ok(());
+                    self.set_status(path, "local", Some(&format!("kept on this PC: {r}")))?;
+                    return Ok(None);
                 }
-                if media == Media::Photo {
-                    facts = extract::photo_facts(p);
-                }
-                let jpeg = match extract::picture(p, media) {
+                let shot = if media == Media::Video { extract::video_picture(p) } else { extract::picture(p, media).map(|j| j.map(|j| (j, None))) };
+                let (jpeg, video) = match shot {
                     Ok(Some(j)) => j,
                     Ok(None) => {
-                        self.set_status(path, "skipped", Some("too small to describe")).map_err(fail)?;
-                        return Ok(());
+                        self.set_status(path, "skipped", Some("too small to describe"))?;
+                        return Ok(None);
                     }
                     Err(e) => {
-                        self.set_status(path, "skipped", Some(&e.to_string())).map_err(fail)?;
-                        return Ok(());
+                        self.set_status(path, "skipped", Some(&e.to_string()))?;
+                        return Ok(None);
                     }
                 };
+                let facts = if media == Media::Photo { extract::photo_facts(p) } else { Default::default() };
                 let when = facts.taken.clone().unwrap_or_else(|| date_text(mtime));
-                let context = format!("{} named \"{name}\" in folder \"{folder}\", from {when}", if media == Media::Video { "a frame from a video" } else { "a photo" });
-                claude.describe_picture(&jpeg, &context)
+                let (what, length) = match video {
+                    Some(v) if v.frames > 1 => (
+                        format!("these {} moments from one video, in time order (left to right, top to bottom); describe the video as a whole", v.frames),
+                        v.seconds.map(|s| format!(", {} long", duration_text(s))).unwrap_or_default(),
+                    ),
+                    Some(v) => ("this frame from a video".to_string(), v.seconds.map(|s| format!(", {} long", duration_text(s))).unwrap_or_default()),
+                    None if media == Media::Video => ("this frame from a video".to_string(), String::new()),
+                    None => ("this photo".to_string(), String::new()),
+                };
+                let context = format!("\"{name}\" in folder \"{folder}\", from {when}{length}");
+                Ok(Some(Claude::picture_request(&jpeg, &what, &context)))
             }
-        };
-        match result {
+        }
+    }
+
+    /// Store Claude's answer for a file, or note why there is none.
+    fn finish(&self, path: &str, media: Media, result: Result<(serde_json::Value, Spend), CallError>) -> Result<(), CallError> {
+        let fail = |e: anyhow::Error| CallError::Retry(e.to_string());
+        match result.and_then(|(v, spend)| Ok((Claude::description_from(v)?, spend))) {
             Ok((d, spend)) => {
-                let file_time = facts.taken.as_deref().and_then(exif_time).unwrap_or(mtime);
+                let p = Path::new(path);
+                let facts = if media == Media::Photo { extract::photo_facts(p) } else { Default::default() };
+                let file_time = facts.taken.as_deref().and_then(exif_time).unwrap_or_else(|| file_mtime(p));
                 self.record_spend(spend).map_err(fail)?;
                 self.store_description(path, media, &d, &facts, file_time, spend).map_err(fail)?;
                 self.set_status(path, "done", None).map_err(fail)?;
@@ -518,13 +566,136 @@ impl Db {
             }
             Err(CallError::Retry(why)) => {
                 let tries: i64 = self.conn.query_row("UPDATE describe_queue SET tries = tries + 1 WHERE path = ?1 RETURNING tries", [path], |r| r.get(0)).unwrap_or(3);
-                if tries >= 3 {
-                    self.set_status(path, "error", Some(&why)).map_err(fail)?;
-                }
+                self.set_status(path, if tries >= 3 { "error" } else { "pending" }, if tries >= 3 { Some(&why) } else { None }).map_err(fail)?;
                 Err(CallError::Retry(why))
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                self.set_status(path, "pending", None).map_err(fail)?;
+                Err(e)
+            }
         }
+    }
+
+    /// Describe one file right away. Returns Err only for problems that should stop the worker for a while.
+    fn describe_one(&self, claude: &Claude, path: &str, media: Media) -> Result<(), CallError> {
+        let Some(req) = self.prepare(path, media).map_err(|e| CallError::Retry(e.to_string()))? else { return Ok(()) };
+        self.finish(path, media, claude.describe(&req).map(|(d, s)| (serde_json::to_value(d).unwrap_or_default(), s)))
+    }
+
+    // ---------- batches ----------
+
+    fn pending_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT count(*) FROM describe_queue WHERE status = 'pending'", [], |r| r.get(0))?)
+    }
+
+    fn open_batches(&self) -> Result<Vec<(String, i64, bool)>> {
+        let mut s = self.conn.prepare("SELECT id, created, discard FROM batches ORDER BY created")?;
+        Ok(s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))?.collect::<Result<_, _>>()?)
+    }
+
+    /// Money set aside for batches whose cost isn't known yet.
+    fn reserved(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT coalesce(sum(reserved), 0) FROM batches WHERE discard = 0", [], |r| r.get(0))?)
+    }
+
+    /// Prepare up to `BATCH_MAX` waiting files and send them as one batch. Returns how many were sent.
+    fn send_batch(&self, claude: &Claude, stop: &AtomicBool) -> Result<usize, CallError> {
+        let fail = |e: anyhow::Error| CallError::Retry(e.to_string());
+        let budget = self.money_left().map_err(fail)?;
+        let mut items: Vec<(String, Request)> = Vec::new();
+        let mut paths: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        while items.len() < BATCH_MAX && ((items.len() as i64) + 1) * BATCH_RESERVE <= budget && !stop.load(Ordering::Relaxed) {
+            let row: Option<(i64, String, String)> = self
+                .conn
+                .query_row(
+                    "SELECT rowid, path, media FROM describe_queue WHERE status = 'pending' ORDER BY mtime DESC LIMIT 1 OFFSET ?1",
+                    [seen.len() as i64],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| fail(e.into()))?;
+            let Some((rowid, path, media)) = row else { break };
+            seen.insert(rowid);
+            let Some(media) = Media::parse(&media) else { continue };
+            // Settled files leave 'pending', so the offset only counts the ones kept for the batch.
+            match self.prepare(&path, media).map_err(fail)? {
+                Some(req) => {
+                    items.push((format!("q{rowid}"), req));
+                    paths.push(path);
+                }
+                None => {
+                    seen.remove(&rowid);
+                }
+            }
+        }
+        if items.is_empty() {
+            return Ok(0);
+        }
+        let id = claude.submit_batch(&items)?;
+        let tx = self.conn.unchecked_transaction().map_err(|e| fail(e.into()))?;
+        tx.execute(
+            "INSERT INTO batches (id, created, items, reserved) VALUES (?1, ?2, ?3, ?4)",
+            params![id, now(), items.len() as i64, items.len() as i64 * BATCH_RESERVE],
+        )
+        .map_err(|e| fail(e.into()))?;
+        for p in &paths {
+            tx.execute("UPDATE describe_queue SET status = 'batched', reason = ?2 WHERE path = ?1", params![p, id]).map_err(|e| fail(e.into()))?;
+        }
+        tx.commit().map_err(|e| fail(e.into()))?;
+        Ok(items.len())
+    }
+
+    /// Collect finished batches: store their descriptions, put unanswered files back in the
+    /// queue, and delete the batch from Anthropic. Returns how many files were collected.
+    fn collect_batches(&self, claude: &Claude) -> Result<usize, CallError> {
+        let fail = |e: anyhow::Error| CallError::Retry(e.to_string());
+        let mut n = 0;
+        for (id, _, discard) in self.open_batches().map_err(fail)? {
+            let Some(url) = claude.batch_results_url(&id)? else { continue };
+            let results = if discard { Vec::new() } else { claude.batch_results(&url)? };
+            n += self.apply_batch(&id, results)?;
+            // Best effort: if this fails, Anthropic deletes it after 29 days anyway.
+            let _ = claude.delete_batch(&id);
+        }
+        Ok(n)
+    }
+
+    /// Store a finished batch's answers, put unanswered files back in the queue and forget the batch.
+    fn apply_batch(&self, id: &str, results: Vec<(String, Result<(serde_json::Value, Spend), CallError>)>) -> Result<usize, CallError> {
+        let fail = |e: anyhow::Error| CallError::Retry(e.to_string());
+        let mut n = 0;
+        {
+            {
+                for (custom, result) in results {
+                    let Some(rowid) = custom.strip_prefix('q').and_then(|r| r.parse::<i64>().ok()) else { continue };
+                    let row: Option<(String, String, String, Option<String>)> = self
+                        .conn
+                        .query_row("SELECT path, media, status, reason FROM describe_queue WHERE rowid = ?1", [rowid], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        })
+                        .optional()
+                        .map_err(|e| fail(e.into()))?;
+                    let Some((path, media, status, reason)) = row else { continue };
+                    if status != "batched" || reason.as_deref() != Some(id) {
+                        continue; // changed or moved to a private folder meanwhile
+                    }
+                    let Some(media) = Media::parse(&media) else { continue };
+                    match self.finish(&path, media, result) {
+                        Ok(()) => n += 1,
+                        Err(CallError::BadKey(m)) => {
+                            self.set_kv("key_problem", Some(&m)).map_err(fail)?;
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+        }
+        self.conn
+            .execute("UPDATE describe_queue SET status = 'pending', reason = NULL WHERE status = 'batched' AND reason = ?1", [id])
+            .map_err(|e| fail(e.into()))?;
+        self.conn.execute("DELETE FROM batches WHERE id = ?1", [id]).map_err(|e| fail(e.into()))?;
+        Ok(n)
     }
 
     /// Write stories for memories that have none, or that grew since. Returns how many were written.
@@ -749,6 +920,61 @@ impl Db {
             .is_some())
     }
 
+    /// Files whose descriptions share the most details with this one (same event, people,
+    /// place, things). Runs on the PC only.
+    pub fn similar(&self, path: &str, limit: usize) -> Result<Vec<Found>> {
+        let Some(d) = self.description(path)? else { return Ok(Vec::new()) };
+        const COMMON: &[&str] = &["with", "from", "that", "this", "their", "there", "into", "onto", "over", "under", "near", "some", "several", "other", "very", "about", "image", "photo", "picture", "video", "frame", "document", "file", "shows", "showing", "person", "people"];
+        let mut weight: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut add = |text: &str, w: f64| {
+            for t in text.split(|c: char| !c.is_alphanumeric()).map(str::to_lowercase) {
+                if t.len() >= 4 && !COMMON.contains(&t.as_str()) && !t.chars().all(|c| c.is_ascii_digit()) {
+                    *weight.entry(t).or_default() += w;
+                }
+            }
+        };
+        add(&d.event, 3.0);
+        add(&d.for_whom, 3.0);
+        add(&d.topic, 2.0);
+        add(&d.setting, 1.5);
+        for p in &d.people {
+            add(&p.looks, 1.0);
+            add(&p.doing, 1.5);
+            p.wearing.iter().for_each(|w| add(w, 1.5));
+        }
+        d.objects.iter().for_each(|o| add(o, 1.0));
+        d.key_names.iter().for_each(|n| add(n, 2.0));
+        add(&d.summary, 0.5);
+        let mut terms: Vec<(String, f64)> = weight.into_iter().collect();
+        terms.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        terms.truncate(16);
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let q = terms.iter().map(|(t, _)| format!("\"{t}\"")).collect::<Vec<_>>().join(" OR ");
+        let mut s = self.conn.prepare(
+            "SELECT d.path, d.summary, d.file_time, descriptions_fts.text FROM descriptions_fts
+             JOIN descriptions d ON d.id = descriptions_fts.rowid WHERE descriptions_fts MATCH ?1 LIMIT 300",
+        )?;
+        let rows: Vec<(String, String, i64, String)> = s.query_map([&q], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+        let mut scored: Vec<(f64, Found)> = rows
+            .into_iter()
+            .filter(|(p, ..)| p != path)
+            .filter_map(|(p, summary, t, text)| {
+                let text = text.to_lowercase();
+                let words: std::collections::HashSet<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+                let shared: Vec<&(String, f64)> = terms.iter().filter(|(t, _)| words.contains(t.as_str())).collect();
+                let score: f64 = shared.iter().map(|(_, w)| w).sum();
+                (score >= 2.0).then(|| {
+                    let why = format!("also {}", shared.iter().take(4).map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(", "));
+                    (score, file_found(&p, t, summary, why))
+                })
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        Ok(scored.into_iter().take(limit).map(|(_, f)| f).collect())
+    }
+
     /// The description of one file, if it has one.
     pub fn description(&self, path: &str) -> Result<Option<Description>> {
         let d: Option<String> = self.conn.query_row("SELECT details FROM descriptions WHERE path = ?1", [path], |r| r.get(0)).optional()?;
@@ -835,16 +1061,28 @@ pub fn run_worker(db: &Db, folders: &[PathBuf], worker: &Worker, paused: &Atomic
             std::thread::sleep(Duration::from_secs(1));
         }
     };
+    let mut last_poll = 0i64;
     while !worker.stop.load(Ordering::Relaxed) {
         let step = (|| -> Result<u64> {
+            let Some(key) = db.api_key()? else {
+                worker.set(if db.cloud_on()? { "no_key" } else { "off" });
+                return Ok(10);
+            };
+            let claude = Claude::new(&key);
+            // Batches already sent are collected even if describing was turned off since,
+            // so nothing is left at Anthropic.
+            if db.kv("key_problem")?.is_none() && now() - last_poll >= BATCH_POLL_SECS && !db.open_batches()?.is_empty() {
+                last_poll = now();
+                match db.collect_batches(&claude) {
+                    Ok(_) => {}
+                    Err(CallError::BadKey(m)) => db.set_kv("key_problem", Some(&m))?,
+                    Err(e) => eprintln!("collecting batches: {e}"),
+                }
+            }
             if !db.cloud_on()? {
                 worker.set("off");
                 return Ok(10);
             }
-            let Some(key) = db.api_key()? else {
-                worker.set("no_key");
-                return Ok(10);
-            };
             if db.kv("key_problem")?.is_some() {
                 worker.set("key_problem");
                 return Ok(30);
@@ -871,21 +1109,41 @@ pub fn run_worker(db: &Db, folders: &[PathBuf], worker: &Worker, paused: &Atomic
                 return Ok(20);
             }
             if db.money_left()? < MIN_LEFT {
-                worker.set("cap");
+                worker.set(if db.open_batches()?.is_empty() { "cap" } else { "batch_waiting" });
                 worker.force.store(false, Ordering::Relaxed);
                 return Ok(30);
             }
-            let claude = Claude::new(&key);
-            let Some((path, media)) = db.next_pending()? else {
+            let pending = db.pending_count()?;
+            let batching = !db.open_batches()?.is_empty();
+            // Many files: one batch at a time, at half price. A few new files: right away.
+            if pending >= BATCH_MIN && !batching {
+                worker.set("preparing_batch");
+                return match db.send_batch(&claude, &worker.stop) {
+                    Ok(_) => {
+                        last_poll = now();
+                        Ok(1)
+                    }
+                    Err(CallError::BadKey(m)) => {
+                        db.set_kv("key_problem", Some(&m))?;
+                        Ok(30)
+                    }
+                    Err(e) => {
+                        eprintln!("sending a batch: {e}");
+                        Ok(120)
+                    }
+                };
+            }
+            let next = if pending >= BATCH_MIN { None } else { db.next_pending()? };
+            let Some((path, media)) = next else {
+                if batching {
+                    worker.set("batch_waiting");
+                    return Ok(30);
+                }
                 if !db.first_index_done()? {
                     db.set_kv("first_index_done", Some(&now().to_string()))?;
                 }
                 match db.write_stories(&claude, 5) {
-                    Ok(0) => {
-                        worker.set("done");
-                        worker.force.store(false, Ordering::Relaxed);
-                        return Ok(60);
-                    }
+                    Ok(0) => {}
                     Ok(_) => return Ok(1),
                     Err(CallError::BadKey(m)) => {
                         db.set_kv("key_problem", Some(&m))?;
@@ -893,6 +1151,18 @@ pub fn run_worker(db: &Db, folders: &[PathBuf], worker: &Worker, paused: &Atomic
                     }
                     Err(_) => return Ok(60),
                 }
+                match db.name_groups(&claude) {
+                    Ok(true) => return Ok(1),
+                    Ok(false) => {}
+                    Err(CallError::BadKey(m)) => {
+                        db.set_kv("key_problem", Some(&m))?;
+                        return Ok(30);
+                    }
+                    Err(_) => return Ok(60),
+                }
+                worker.set("done");
+                worker.force.store(false, Ordering::Relaxed);
+                return Ok(60);
             };
             worker.set("describing");
             match db.describe_one(&claude, &path, media) {
@@ -1000,6 +1270,48 @@ mod tests {
 
         db.forget_cloud_descriptions().unwrap();
         assert!(db.smart_search("yoga in pink").unwrap().results.is_empty());
+    }
+
+    #[test]
+    fn batch_answers_are_stored_and_the_rest_requeued() {
+        let db = Db::in_memory().unwrap();
+        for (i, p) in ["/a.jpg", "/b.jpg", "/c.jpg"].iter().enumerate() {
+            db.conn
+                .execute("INSERT INTO describe_queue (path, media, mtime, status, reason, added) VALUES (?1, 'photo', ?2, 'batched', 'b1', 0)", params![p, i as i64])
+                .unwrap();
+        }
+        db.conn.execute("INSERT INTO batches (id, created, items, reserved) VALUES ('b1', 0, 3, 1200)", []).unwrap();
+        assert_eq!(db.money_left().unwrap(), FIRST_INDEX_CAP - 1200, "money is set aside while the batch runs");
+        let rowid = |p: &str| -> i64 { db.conn.query_row("SELECT rowid FROM describe_queue WHERE path = ?1", [p], |r| r.get(0)).unwrap() };
+        let ok = serde_json::to_value(Description { summary: "a red kite over a beach".into(), ..Default::default() }).unwrap();
+        let results = vec![
+            (format!("q{}", rowid("/a.jpg")), Ok((ok, Spend { micro_usd: 150, ..Default::default() }))),
+            (format!("q{}", rowid("/b.jpg")), Err(CallError::Skip("declined".into()))),
+        ];
+        assert_eq!(db.apply_batch("b1", results).unwrap(), 2, "two files answered (one described, one declined)");
+        let status = |p: &str| -> String { db.conn.query_row("SELECT status FROM describe_queue WHERE path = ?1", [p], |r| r.get(0)).unwrap() };
+        assert_eq!((status("/a.jpg"), status("/b.jpg"), status("/c.jpg")), ("done".into(), "skipped".into(), "pending".into()));
+        assert_eq!(db.money_left().unwrap(), FIRST_INDEX_CAP - 150, "only the real cost is kept");
+        assert!(db.open_batches().unwrap().is_empty());
+        assert_eq!(db.smart_search("kite").unwrap().results.len(), 1);
+    }
+
+    #[test]
+    fn similar_files_share_details() {
+        let db = Db::in_memory().unwrap();
+        let yoga = |summary: &str, wearing: &str| Description {
+            summary: summary.into(),
+            people: vec![Person { looks: "young woman".into(), wearing: vec![wearing.into()], doing: "yoga".into() }],
+            setting: "rooftop at sunrise".into(),
+            ..Default::default()
+        };
+        db.store_description("/v/a.mp4", Media::Video, &yoga("Rooftop yoga", "pink top"), &Default::default(), 1, Spend::default()).unwrap();
+        db.store_description("/p/b.jpg", Media::Photo, &yoga("Tree pose on the rooftop", "pink top"), &Default::default(), 2, Spend::default()).unwrap();
+        let cake = Description { summary: "A birthday cake with candles".into(), objects: vec!["cake".into(), "candles".into()], ..Default::default() };
+        db.store_description("/p/c.jpg", Media::Photo, &cake, &Default::default(), 3, Spend::default()).unwrap();
+        let s = db.similar("/v/a.mp4", 5).unwrap();
+        assert_eq!(s.iter().map(|f| f.path.as_deref().unwrap()).collect::<Vec<_>>(), ["/p/b.jpg"]);
+        assert!(s[0].why.contains("yoga") || s[0].why.contains("pink"), "{}", s[0].why);
     }
 
     #[test]

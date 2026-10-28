@@ -20,7 +20,7 @@ let paused = false;
 let watching = [];
 let searchTimer;
 let cloudReady = false; // cloud descriptions on with a working key
-let smart = null; // { question, loading, answer } for an "Ask AI" search
+let smart = null; // { key, question, loading, answer, like } for an "Ask AI" search; key = the search box text
 
 // ---------- formatting ----------
 
@@ -98,12 +98,20 @@ function smartSection() {
   const sec = el("section", "mem-section smart");
   const head = el("div", "mem-head");
   if (smart.loading) {
-    head.append(el("strong", null, "Asking Claude…"), el("span", "mem-understood", "Reading your question and checking the best matches."));
+    head.append(
+      el("strong", null, smart.like ? "Finding similar files…" : "Asking Claude…"),
+      el("span", "mem-understood", smart.like ? "" : "Reading your question and checking the best matches.")
+    );
     sec.append(head);
     return sec;
   }
   const a = smart.answer;
-  head.append(el("strong", null, a.results.length ? "Best matches" : "Nothing matches that memory yet"));
+  if (smart.like) {
+    head.append(el("strong", null, a.results.length ? `Like ${smart.like}` : `Nothing else looks like ${smart.like} yet`));
+    head.append(button2("Back to results", "btn small subtle", () => { smart = smart.back; render(); }));
+  } else {
+    head.append(el("strong", null, a.results.length ? "Best matches" : "Nothing matches that memory yet"));
+  }
   if (a.understood.length) {
     const u = el("span", "mem-understood");
     u.append("Looking for: ");
@@ -137,6 +145,7 @@ function smartSection() {
     if (f.path && f.exists) {
       act("Open", "btn primary", async () => { await invoke("open_file", { path: f.path }); invoke("hide_window"); });
       act("Show in folder", "btn", async () => { await invoke("show_in_folder", { path: f.path }); invoke("hide_window"); });
+      act("More like this", "btn subtle", () => moreLike(f));
     } else if (f.path) {
       bar.append(el("span", "pj-muted", "This file is no longer there."));
     }
@@ -150,18 +159,58 @@ function smartSection() {
     sec.append(card);
   });
   if (a.cost) sec.append(el("p", "pj-muted sm-cost", `This search cost ${a.cost}.`));
+  if (!smart.like && cloudReady) {
+    // Follow-up: narrow the same search without retyping it.
+    const form = el("form", "sm-refine");
+    const input = el("input", "st-input");
+    input.placeholder = "Not quite? Add a detail: older, from college, she had a yoga mat…";
+    input.setAttribute("aria-label", "Add a detail to this search");
+    const go = el("button", "btn small", "Search again");
+    go.type = "submit";
+    form.append(input, go);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const more = input.value.trim();
+      if (more) ask(`${smart.question}. Also: ${more}`);
+    });
+    sec.append(form);
+  }
   return sec;
 }
 
-async function ask() {
-  const question = q.value.trim();
+function button2(text, cls, onClick) {
+  const b = el("button", cls, text);
+  b.type = "button";
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+async function moreLike(f) {
+  const key = q.value.trim();
+  const back = smart;
+  smart = { key, like: f.name, loading: true, back };
+  render();
+  try {
+    const results = await invoke("similar", { path: f.path });
+    if (smart?.like !== f.name) return;
+    smart = { key, like: f.name, loading: false, back, answer: { understood: [], results, local_only: null, cost: "" } };
+  } catch (e) {
+    smart = back;
+    showToast(String(e));
+  }
+  render();
+  list.scrollTop = 0;
+}
+
+async function ask(question = q.value.trim()) {
+  const key = q.value.trim();
   if (!question || view !== "search") return;
-  smart = { question, loading: true };
+  smart = { key, question, loading: true };
   render();
   try {
     const answer = await invoke("smart_search", { question });
     if (smart?.question !== question) return;
-    smart = { question, loading: false, answer };
+    smart = { key, question, loading: false, answer };
   } catch (e) {
     smart = null;
     showToast(String(e));
@@ -190,7 +239,7 @@ async function refreshCloud() {
 
 function render() {
   list.replaceChildren();
-  if (view === "search" && smart && smart.question === q.value.trim()) list.append(smartSection());
+  if (view === "search" && smart && smart.key === q.value.trim()) list.append(smartSection());
   const showMemories = view === "search" && recalled && (recalled.results.length || recalled.understood.length);
   if (showMemories) list.append(memoriesSection());
   if (!rows.length) {
@@ -287,7 +336,7 @@ function setPausedUi(p) {
 
 q.addEventListener("input", () => {
   if (view !== "search") setView("search");
-  if (smart && smart.question !== q.value.trim()) smart = null;
+  if (smart && smart.key !== q.value.trim()) smart = null;
   updateAsk();
   clearTimeout(searchTimer);
   searchTimer = setTimeout(load, 120);

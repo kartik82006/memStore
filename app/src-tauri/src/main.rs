@@ -701,6 +701,77 @@ struct SmartDto {
     cost: String,
 }
 
+fn to_found_dto(f: cloud::Found) -> FoundDto {
+    let (name, folder) = f.path.as_deref().map(split).unwrap_or_default();
+    let exists = f.path.as_deref().is_some_and(|p| Path::new(p).exists());
+    FoundDto { found: f, name, folder, exists }
+}
+
+/// Files that look like this one (same event, people, place), found on the PC.
+#[tauri::command]
+fn similar(path: String, state: State<AppState>) -> Result<Vec<FoundDto>, String> {
+    Ok(state.db.lock().map_err(err)?.similar(&path, 12).map_err(err)?.into_iter().map(to_found_dto).collect())
+}
+
+#[derive(Serialize)]
+struct GroupFileDto {
+    #[serde(flatten)]
+    file: memstor_core::groups::GroupFile,
+    name: String,
+    folder: String,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+struct GroupDto {
+    name: String,
+    kind: String,
+    start: i64,
+    end: i64,
+    photos: usize,
+    videos: usize,
+    documents: usize,
+    files: Vec<GroupFileDto>,
+}
+
+/// Described files grouped by event or by who they were made for.
+#[tauri::command]
+fn list_groups(state: State<AppState>) -> Result<Vec<GroupDto>, String> {
+    let groups = state.db.lock().map_err(err)?.groups().map_err(err)?;
+    Ok(groups
+        .into_iter()
+        .map(|g| GroupDto {
+            files: g
+                .files
+                .into_iter()
+                .map(|f| {
+                    let (name, folder) = split(&f.path);
+                    GroupFileDto { exists: Path::new(&f.path).exists(), name, folder, file: f }
+                })
+                .collect(),
+            name: g.name,
+            kind: g.kind,
+            start: g.start,
+            end: g.end,
+            photos: g.photos,
+            videos: g.videos,
+            documents: g.documents,
+        })
+        .collect())
+}
+
+/// Shortcuts to a group's files in one folder named after it.
+#[tauri::command]
+fn gather_group(name: String, paths: Vec<String>, app: AppHandle) -> Result<GatherDto, String> {
+    if paths.is_empty() {
+        return Err("There are no files to gather.".into());
+    }
+    let g = gather::gather(&paths, &gather::default_root(), &name).map_err(err)?;
+    let folder = g.folder.display().to_string();
+    let _ = app.opener().open_path(&folder, None::<&str>);
+    Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
+}
+
 /// Search by memory. Runs on its own connection so the window stays responsive while
 /// Claude answers.
 #[tauri::command]
@@ -717,15 +788,7 @@ async fn smart_search(question: String, app: AppHandle) -> Result<SmartDto, Stri
                 m if m < 10_000 => "less than 1 cent".into(),
                 m => memstor_core::claude::dollars(m),
             },
-            results: a
-                .results
-                .into_iter()
-                .map(|f| {
-                    let (name, folder) = f.path.as_deref().map(split).unwrap_or_default();
-                    let exists = f.path.as_deref().is_some_and(|p| Path::new(p).exists());
-                    FoundDto { found: f, name, folder, exists }
-                })
-                .collect(),
+            results: a.results.into_iter().map(to_found_dto).collect(),
         })
     })
     .await
@@ -896,6 +959,9 @@ fn main() {
             remove_local_only_folder,
             forget_cloud_descriptions,
             smart_search,
+            similar,
+            list_groups,
+            gather_group,
             get_settings,
             add_extra_folder,
             remove_extra_folder,

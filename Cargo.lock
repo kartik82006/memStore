@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "memstor-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "memstor-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "memstor-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

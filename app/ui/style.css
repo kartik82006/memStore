@@ -248,3 +248,6 @@ body.projects-view .hint { display: none; }
 .st-sec > p { margin: 0; }
 .ask[hidden] { display: none; }
 .ask span[hidden] { display: none; }
+.sm-refine { display: flex; gap: 8px; align-items: center; margin: 0 4px; }
+.sm-refine .st-input { font-family: var(--ui); }
+.seg { flex-wrap: wrap; }

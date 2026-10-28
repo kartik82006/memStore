@@ -83,10 +83,10 @@ All memories are listed under Activities → All memories.
 Search the way you remember things: "video of a girl in pink doing yoga", "the edit for the
 organisation with alumni pics". Type the question and press **Shift+Enter** (or **Ask AI**).
 
-- **Off by default.** Turn it on in Settings and paste your own Claude API key
-  (console.anthropic.com). You pay Anthropic directly; MemStor has no server.
-- **What is sent:** a small preview (768 px at most) of each photo, one frame of each video, and up
-  to 3,000 words of each document's text, to the Claude API (Haiku 5.5). Claude writes a short
+- **Off by default.** Paste your own Claude API key (console.anthropic.com) at the top of
+  Settings and press "Save key and turn on". You pay Anthropic directly; MemStor has no server.
+- **What is sent:** a small preview (768 px at most) of each photo, four moments of each video in
+  one picture (with its length), and up to 3,000 words of each document's text, to the Claude API (Haiku 5.5). Claude writes a short
   description: people and what they wear and do, place, objects, colours, visible text, event,
   topic, who it was for.
 - **What is kept:** the descriptions, only on your PC, in the encrypted database. Your files never
@@ -96,17 +96,30 @@ organisation with alumni pics". Type the question and press **Shift+Enter** (or 
   numbers are checked on the PC first).
 - **Spending limits:** $5 for the first pass over your files, then $1 a month. It stops at the
   limit and asks before spending more ("Allow $1 more"). A search costs well under a cent.
+- **Half price in batches:** when 20 or more files are waiting, they go to Anthropic as one batch
+  at half price (answers usually within an hour). Each batch is deleted from Anthropic as soon as
+  its answers are collected. A few new files are described right away.
 - **Runs when you are away:** describing waits until the PC has been idle for 2 minutes, unless you
   press "Describe now".
 - **Searching:** Claude turns your sentence into dates, kinds of work and details; MemStor searches
   the descriptions and memories on the PC; Claude then picks the best matches and says why. Without
   a key, the local memory search above still works.
+- **Follow-ups:** not the right one? Add a detail under the results ("older, from college") and
+  search again. **More like this** on any file finds others with the same event, people or place
+  (on the PC, free).
+- **Events & groups** (Activities tab): described files grouped by the event in them or who they
+  were made for ("NSS Alumni Meet 2026", "Rotaract Club Delhi"), ready to gather in one folder.
+  Different spellings of the same name are merged by one small Claude call.
 - Memories also get a one-line story ("A four-day rush to cut the alumni meet video…").
 - "Delete all descriptions" removes them all; turning the feature off stops all sending.
 
 ![Ask AI](docs/ask-ai.png)
 
 ![Search by memory settings](docs/cloud-settings.png)
+
+![More like this](docs/more-like-this.png)
+
+![Events and groups](docs/events-groups.png)
 
 ## Privacy and settings
 
@@ -178,7 +191,9 @@ crates/core      collector + database (shared)
   src/memory.rs    memories (finished pieces of work), src/recall.rs local "do you remember" search
   src/extract.rs   document text, photo dates, previews, privacy checks (all on the PC)
   src/claude.rs    Claude API calls (describe, plan a search, rerank, stories)
-  src/cloud.rs     describe queue, spending limits, background worker, smart search
+  src/cloud.rs     describe queue, batches, spending limits, background worker, smart search
+  src/groups.rs    events and groups from the descriptions
+  src/winvideo.rs  video frames via Windows Media Foundation (loaded at run time)
 crates/cli       the `memstor` command
 app/src-tauri    the tray app (Tauri 2): tray menu, hotkey, commands for the window
 app/ui           the search window (plain HTML/CSS/JS, no build step)

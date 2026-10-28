@@ -62,6 +62,8 @@
     scanning: "Finding photos, videos and documents…",
     waiting_idle: "Waiting until you step away from the PC (2 minutes without typing or the mouse).",
     describing: "Describing files…",
+    preparing_batch: "Preparing a batch of files to send at half price…",
+    batch_waiting: "A batch was sent at half price. Anthropic usually answers within an hour; it is then deleted from Anthropic.",
     cap: "Stopped at the spending limit.",
     done: "Up to date. New files are described as they appear.",
   };
@@ -148,7 +150,7 @@
     // Progress
     sec.append(el("h4", null, "Progress"));
     sec.append(el("p", null, STATE_TEXT[c.state] || c.state));
-    const total = c.pending + c.described;
+    const total = c.pending + c.in_batch + c.described;
     if (total) {
       const bar = el("div", "st-bar");
       const fill = el("div");
@@ -160,7 +162,7 @@
       el(
         "p",
         "pj-muted",
-        `${c.described} described · ${c.pending} to go · ${c.kept_local} kept on this PC · ${c.skipped} skipped (screenshots, copies)` +
+        `${c.described} described · ${c.pending} to go` + (c.in_batch ? ` · ${c.in_batch} in a batch` : "") + ` · ${c.kept_local} kept on this PC · ${c.skipped} skipped (screenshots, copies)` +
           (c.errors ? ` · ${c.errors} couldn't be read` : "")
       )
     );

@@ -336,6 +336,61 @@ pub fn picture(path: &Path, media: Media) -> Result<Option<Vec<u8>>> {
     Ok(Some(out))
 }
 
+/// What a video picture shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoInfo {
+    /// How many moments are in the picture (1 = a single frame).
+    pub frames: usize,
+    pub seconds: Option<u64>,
+}
+
+/// Moments taken from a video for describing it.
+#[cfg_attr(not(windows), allow(dead_code))]
+const VIDEO_MOMENTS: usize = 4;
+
+/// A JPEG grid of four moments from a video (or one frame when that's all Windows can give),
+/// and what it shows.
+pub fn video_picture(path: &Path) -> Result<Option<(Vec<u8>, Option<VideoInfo>)>> {
+    let (frames, seconds) = video_frames(path).unwrap_or_default();
+    if frames.len() >= 2 {
+        let g = grid(&frames, PICTURE_SIDE);
+        if g.width().max(g.height()) < 200 {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode_image(&g)?;
+        return Ok(Some((out, Some(VideoInfo { frames: frames.len(), seconds }))));
+    }
+    Ok(picture(path, Media::Video)?.map(|j| (j, Some(VideoInfo { frames: 1, seconds }))))
+}
+
+#[cfg(windows)]
+fn video_frames(path: &Path) -> Result<(Vec<image::RgbImage>, Option<u64>)> {
+    crate::winvideo::frames(path, VIDEO_MOMENTS, PICTURE_SIDE / 2)
+}
+
+#[cfg(not(windows))]
+fn video_frames(_path: &Path) -> Result<(Vec<image::RgbImage>, Option<u64>)> {
+    bail!("video frames are only read on Windows")
+}
+
+/// Frames side by side, two per row, on a dark background, fitting `side`.
+pub(crate) fn grid(frames: &[image::RgbImage], side: u32) -> image::RgbImage {
+    const GAP: u32 = 4;
+    let cols = if frames.len() >= 2 { 2 } else { 1 };
+    let rows = frames.len().div_ceil(cols) as u32;
+    let cell_w = (side - GAP * (cols as u32 - 1)) / cols as u32;
+    let cell_h = frames.iter().map(|f| f.height() * cell_w / f.width().max(1)).max().unwrap_or(cell_w).max(1);
+    let mut out = image::RgbImage::from_pixel(cell_w * cols as u32 + GAP * (cols as u32 - 1), cell_h * rows + GAP * (rows - 1), image::Rgb([24, 24, 24]));
+    for (i, f) in frames.iter().enumerate() {
+        let (col, row) = ((i % cols) as u32, (i / cols) as u32);
+        let h = (f.height() * cell_w / f.width().max(1)).max(1);
+        let small = image::imageops::resize(f, cell_w, h, image::imageops::FilterType::Triangle);
+        image::imageops::overlay(&mut out, &small, (col * (cell_w + GAP)) as i64, (row * (cell_h + GAP) + (cell_h - h) / 2) as i64);
+    }
+    out
+}
+
 #[cfg(windows)]
 fn shell_picture(path: &Path) -> Result<image::DynamicImage> {
     crate::winthumb::thumbnail(path, PICTURE_SIDE)
@@ -363,6 +418,18 @@ pub fn fingerprint(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_frames_make_a_two_by_two_grid() {
+        let colours = [[200, 0, 0], [0, 200, 0], [0, 0, 200], [200, 200, 0]];
+        let frames: Vec<_> = colours.iter().map(|c| image::RgbImage::from_pixel(384, 216, image::Rgb(*c))).collect();
+        let g = grid(&frames, 768);
+        assert_eq!(g.dimensions(), (382 * 2 + 4, 214 * 2 + 4));
+        assert_eq!(*g.get_pixel(10, 10), image::Rgb([200, 0, 0]));
+        assert_eq!(*g.get_pixel(700, 10), image::Rgb([0, 200, 0]));
+        assert_eq!(*g.get_pixel(10, 300), image::Rgb([0, 0, 200]));
+        assert_eq!(*g.get_pixel(700, 300), image::Rgb([200, 200, 0]));
+    }
 
     #[test]
     fn private_details_are_spotted() {
