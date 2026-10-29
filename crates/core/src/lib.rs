@@ -1,9 +1,12 @@
 //! MemStor core: the background collector and the local database it writes to.
 //! Shared by the command-line tool and the tray app.
 
+pub mod actions;
 pub mod activities;
+pub mod agent;
 pub mod claude;
 pub mod cloud;
+pub mod context;
 pub mod crypto;
 pub mod db;
 pub mod extract;
@@ -14,7 +17,9 @@ pub mod memory;
 pub mod projects;
 pub mod recall;
 pub mod recent;
+pub mod recorder;
 pub mod settings;
+pub mod skills;
 pub mod watch;
 #[cfg(windows)]
 mod winthumb;

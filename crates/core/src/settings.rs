@@ -22,6 +22,19 @@ fn same_path(a: &str, b: &str) -> bool {
 }
 
 impl Db {
+    /// Folders to watch: the default ones plus the user's extra folders, minus excluded ones.
+    pub fn watched_folders(&self) -> Vec<std::path::PathBuf> {
+        let excluded = self.excluded_folders().unwrap_or_default();
+        let mut folders = crate::watch::default_folders();
+        folders.extend(self.extra_folders().unwrap_or_default().into_iter().map(std::path::PathBuf::from));
+        folders.retain(|f| {
+            let f = f.display().to_string();
+            !excluded.iter().any(|e| same_path(&f, e) || is_inside(&f, e))
+        });
+        folders.dedup();
+        folders
+    }
+
     fn list(&self, table: &str) -> Result<Vec<String>> {
         let mut s = self.conn.prepare(&format!("SELECT path FROM {table} ORDER BY path"))?;
         Ok(s.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?)
@@ -114,6 +127,8 @@ impl Db {
         }
         let cutoff = now - days * 86_400;
         let n = self.conn.execute("DELETE FROM events WHERE ts < ?1", [cutoff])?;
+        self.conn.execute("DELETE FROM app_usage WHERE end_ts < ?1", [cutoff])?;
+        self.conn.execute("DELETE FROM actions WHERE created < ?1", [cutoff])?;
         let orphans: Vec<(i64, String)> = {
             let mut s = self.conn.prepare("SELECT id, path FROM files f WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.file_id = f.id)")?;
             s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
@@ -133,7 +148,7 @@ impl Db {
     /// Recording carries on from now; nothing from before is picked up again.
     pub fn wipe_history(&self, now: i64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        for table in ["events", "files_fts", "files", "memory_files", "memory_days", "memories", "not_related"] {
+        for table in ["events", "files_fts", "files", "memory_files", "memory_days", "memories", "not_related", "app_usage", "actions", "chat"] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         // Don't let the catch-up scan or the memory saver re-read the past.

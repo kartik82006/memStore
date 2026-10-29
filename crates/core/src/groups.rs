@@ -147,7 +147,7 @@ impl Db {
         groups.dedup();
         let labels: Vec<String> = batch.iter().map(|(_, l)| l.clone()).collect();
         let (pairs, spend) = claude.group_names(&groups, &labels)?;
-        self.record_spend(spend).map_err(fail)?;
+        self.record_spend("groups", spend).map_err(fail)?;
         let answered: HashMap<String, String> = pairs.into_iter().map(|(l, g)| (normalise(&l), g)).collect();
         for (key, label) in batch {
             // A name Claude skipped stays its own group, so it isn't asked about again.

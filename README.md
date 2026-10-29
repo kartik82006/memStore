@@ -3,11 +3,36 @@
 Find files on your computer by what you were doing, not only by what you named them.
 
 MemStor runs quietly in the Windows tray and records which files you create, edit, rename and
-open. Press **Ctrl+Shift+Space** anywhere to search that history or see what you worked on
-today. Everything stays in an encrypted database on your PC. Nothing is sent anywhere unless you
-turn on **Search by memory (AI)**, which is off until you add your own Claude API key.
+open. Press **Ctrl+Space** (or **Ctrl+Shift+Space**) anywhere and a small assistant bar pops up:
+type a file name, or ask the way you'd ask a friend ("the poster I made before Diwali", "rename
+these properly"). Everything stays in an encrypted database on your PC. Nothing is sent anywhere
+unless you turn on AI, which is off until you add your own Claude API key.
 
-The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ
+The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ ·
+the assistant plan: https://claude.ai/artifact/2in8QasMoZRc86qziUNCa7
+
+## The assistant (v0.6)
+
+- **Ctrl+Space** opens the bar over whatever you're doing (skipped if you have more than one
+  keyboard layout, since Windows uses it to switch them). **Ctrl+Shift+Space** always works, and
+  so does the tray icon. **Esc** or clicking away hides it.
+- Typing shows matching files at once (free, on your PC). **Enter** asks.
+- Simple asks ("today", "yesterday", "open the budget sheet", "budget kholo") are answered on the
+  PC with no AI. Everything else goes to Claude Haiku, which answers by using MemStor's own
+  skills (find files, recent files, a day, activities, search by memory, similar files, file info,
+  events, projects, open, gather, rename, move). Answers come back as cards you can open or gather.
+- **Seeing**: the bar shows what it knows about what you're doing right now (the app in front,
+  the window title, the Explorer folder and selected files, today's activity). Click a chip to
+  leave it out of your next question. Turn it off entirely under Settings → Seeing what you're
+  doing. Private windows and local-only folders are never shown.
+- **Changes**: rename and move are always shown as a plan first. Nothing happens until you press
+  **Do it**, and each change can be undone for 30 days (More → Changes I made with MemStor).
+  Files are never overwritten or deleted, and system folders are off limits.
+- The older views (Activities, Projects, All files and memories, Settings) are under **More**.
+- Every AI call is logged with what it was for (assistant, describe, search, …), and Settings
+  shows this month's spend per feature.
+- The recorder now runs as its own background process (`memstor-app.exe --recorder`), so it
+  keeps recording while the window is busy or reloading. The app restarts it if it stops.
 
 ![Search window](docs/search-window.png)
 
@@ -18,7 +43,7 @@ Every push builds Windows downloads on GitHub Actions. Open the latest run under
 
 ## Using the tray app (M1)
 
-- MemStor starts hidden in the tray. **Left-click** the icon or press **Ctrl+Shift+Space** to open search.
+- MemStor starts hidden in the tray. **Left-click** the icon or press **Ctrl+Space** / **Ctrl+Shift+Space** to open it.
 - Type part of a file name or a folder it was in. With an empty box you see your most recent files.
 - **Today** and **Yesterday** list every file you touched, with the time span and what happened.
 - **Enter** opens the file, **Ctrl+Enter** shows it in Explorer, **Esc** hides the window.
@@ -194,9 +219,14 @@ crates/core      collector + database (shared)
   src/cloud.rs     describe queue, batches, spending limits, background worker, smart search
   src/groups.rs    events and groups from the descriptions
   src/winvideo.rs  video frames via Windows Media Foundation (loaded at run time)
+  src/recorder.rs  the background recorder process and how the app controls it
+  src/context.rs   what you're doing now: app in front, window title, Explorer selection
+  src/skills.rs    the one list of things MemStor can do (used by the assistant, later by voice/MCP)
+  src/agent.rs     the assistant: no-AI fast path, Claude tool loop, short chat history
+  src/actions.rs   rename/move plans, apply with rollback, undo
 crates/cli       the `memstor` command
 app/src-tauri    the tray app (Tauri 2): tray menu, hotkey, commands for the window
-app/ui           the search window (plain HTML/CSS/JS, no build step)
+app/ui           index.html = assistant bar, classic.html = the older views (plain HTML/CSS/JS)
 ```
 
 ## Build
@@ -214,4 +244,5 @@ On Linux the app needs `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 
 ## Next
 
-- Active-window titles as an opt-in signal.
+- v0.7: push-to-talk voice, Sonnet step-up for hard questions.
+- v0.8: optional nudges, Recycle Bin delete with undo, MCP server (off by default).

@@ -66,6 +66,18 @@ CREATE TABLE IF NOT EXISTS batches (
     reserved INTEGER NOT NULL,
     discard  INTEGER NOT NULL DEFAULT 0
 );
+-- Every AI call: what it was for, which model, and what it cost.
+CREATE TABLE IF NOT EXISTS ai_calls (
+    id            INTEGER PRIMARY KEY,
+    ts            INTEGER NOT NULL,
+    month         TEXT NOT NULL,
+    feature       TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    micro_usd     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ai_calls_month ON ai_calls(month);
 CREATE TABLE IF NOT EXISTS memory_stories (
     memory_id INTEGER PRIMARY KEY,
     story     TEXT NOT NULL,
@@ -265,10 +277,16 @@ impl Db {
         Ok(self.kv("first_index_done")?.is_some())
     }
 
-    pub(crate) fn record_spend(&self, s: Spend) -> Result<()> {
+    /// Count what a call cost against the cap, and log it under `feature` (describe, search,
+    /// stories, groups, assistant, setup) so Settings can show where the money went.
+    pub(crate) fn record_spend(&self, feature: &str, s: Spend) -> Result<()> {
         if s.micro_usd == 0 {
             return Ok(());
         }
+        self.conn.execute(
+            "INSERT INTO ai_calls (ts, month, feature, model, input_tokens, output_tokens, micro_usd) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![now(), month(now()), feature, if s.model.is_empty() { crate::claude::MODEL } else { s.model }, s.input_tokens as i64, s.output_tokens as i64, s.micro_usd],
+        )?;
         if self.first_index_done()? {
             self.conn.execute(
                 "INSERT INTO spend (month, micro_usd) VALUES (?1, ?2) ON CONFLICT(month) DO UPDATE SET micro_usd = micro_usd + ?2",
@@ -300,7 +318,15 @@ impl Db {
         self.set_kv(&key, Some(&v.to_string()))
     }
 
-    pub(crate) fn money_left(&self) -> Result<i64> {
+    /// This month's AI spending per feature, biggest first: (feature, calls, micro_usd).
+    pub fn spend_by_feature(&self) -> Result<Vec<(String, i64, i64)>> {
+        let mut s = self.conn.prepare(
+            "SELECT feature, count(*), sum(micro_usd) FROM ai_calls WHERE month = ?1 GROUP BY feature ORDER BY sum(micro_usd) DESC",
+        )?;
+        Ok(s.query_map([month(now())], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?)
+    }
+
+    pub fn money_left(&self) -> Result<i64> {
         let (spent, cap) = self.spend_and_cap()?;
         Ok(cap - spent - self.reserved()?)
     }
@@ -555,7 +581,7 @@ impl Db {
                 let p = Path::new(path);
                 let facts = if media == Media::Photo { extract::photo_facts(p) } else { Default::default() };
                 let file_time = facts.taken.as_deref().and_then(exif_time).unwrap_or_else(|| file_mtime(p));
-                self.record_spend(spend).map_err(fail)?;
+                self.record_spend("describe", spend).map_err(fail)?;
                 self.store_description(path, media, &d, &facts, file_time, spend).map_err(fail)?;
                 self.set_status(path, "done", None).map_err(fail)?;
                 Ok(())
@@ -721,7 +747,7 @@ impl Db {
                 facts.push_str(&format!("- {name}{}\n", summary.map(|s| format!(": {s}")).unwrap_or_default()));
             }
             let (story, spend) = claude.memory_story(&facts)?;
-            self.record_spend(spend).map_err(fail)?;
+            self.record_spend("stories", spend).map_err(fail)?;
             self.conn
                 .execute("INSERT OR REPLACE INTO memory_stories (memory_id, story, files) VALUES (?1, ?2, ?3)", params![m.id, story, m.files.len() as i64])
                 .map_err(|e| fail(e.into()))?;
@@ -782,7 +808,7 @@ impl Db {
             match c.plan(question, &today, &hint) {
                 Ok((plan, spend)) => {
                     answer.micro_usd += spend.micro_usd;
-                    self.record_spend(spend)?;
+                    self.record_spend("search", spend)?;
                     if range.is_none() {
                         if let (Some(a), Some(b)) = (parse_day(&plan.date_from), parse_day(&plan.date_to)) {
                             range = Some((a, b + 86_400));
@@ -884,7 +910,7 @@ impl Db {
             match c.rerank(question, &list) {
                 Ok((order, spend)) => {
                     answer.micro_usd += spend.micro_usd;
-                    self.record_spend(spend)?;
+                    self.record_spend("search", spend)?;
                     answer.results = order
                         .into_iter()
                         .map(|(i, why)| {
@@ -1192,7 +1218,7 @@ pub fn check_key(db: &Db, key: &str) -> Result<()> {
     let c = Claude::new(key);
     match c.check_key() {
         Ok(spend) => {
-            db.record_spend(spend)?;
+            db.record_spend("setup", spend)?;
             db.set_kv("key_problem", None)?;
             Ok(())
         }
@@ -1209,13 +1235,13 @@ mod tests {
     fn caps_switch_from_first_index_to_monthly() {
         let db = Db::in_memory().unwrap();
         assert_eq!(db.spend_and_cap().unwrap(), (0, FIRST_INDEX_CAP));
-        db.record_spend(Spend { micro_usd: 4_999_000, ..Default::default() }).unwrap();
+        db.record_spend("test", Spend { micro_usd: 4_999_000, ..Default::default() }).unwrap();
         assert!(db.money_left().unwrap() < MIN_LEFT);
         db.allow_more().unwrap();
         assert_eq!(db.money_left().unwrap(), 1_001_000);
         db.set_kv("first_index_done", Some("1")).unwrap();
         assert_eq!(db.spend_and_cap().unwrap(), (0, MONTHLY_CAP));
-        db.record_spend(Spend { micro_usd: 300, ..Default::default() }).unwrap();
+        db.record_spend("test", Spend { micro_usd: 300, ..Default::default() }).unwrap();
         assert_eq!(db.spend_and_cap().unwrap(), (300, MONTHLY_CAP));
         assert_eq!(db.kv_i64("total_micro").unwrap(), 4_999_300);
     }

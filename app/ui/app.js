@@ -347,7 +347,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" && e.target !== q) return;
   if (isPanel()) {
     // Typing in a project's name box must not trigger list shortcuts.
-    if (e.key === "Escape" && e.target.tagName !== "INPUT") invoke("hide_window");
+    if (e.key === "Escape" && e.target.tagName !== "INPUT") location.href = "index.html";
     return;
   }
   if (e.key === "ArrowDown") { e.preventDefault(); select(sel + 1); }
@@ -355,7 +355,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); if (cloudReady) ask(); }
   else if (e.key === "Enter") { e.preventDefault(); openSelected(e.ctrlKey); }
   else if (e.key === "Escape") {
-    if (q.value) { q.value = ""; smart = null; updateAsk(); load(); } else { invoke("hide_window"); }
+    if (q.value) { q.value = ""; smart = null; updateAsk(); load(); } else { location.href = "index.html"; }
   }
 });
 
@@ -368,7 +368,8 @@ askBtn.addEventListener("click", () => { if (cloudReady) { ask(); q.focus(); } e
 recBtn.addEventListener("click", () => invoke("set_paused", { paused: !paused }));
 
 listen("paused-changed", (e) => { setPausedUi(e.payload); if (view !== "search") load(); });
-listen("window-shown", () => { if (!isPanel()) { q.focus(); q.select(); } refreshCloud(); load(); });
+// Called up with the hotkey: go back to the assistant.
+listen("window-shown", () => { location.href = "index.html"; });
 window.addEventListener("focus", () => { if (!isPanel()) q.focus(); });
 
 // ---------- start ----------
@@ -383,5 +384,8 @@ window.addEventListener("focus", () => { if (!isPanel()) q.focus(); });
     showToast(String(e));
   }
   refreshCloud();
-  load();
+  // Opened from the assistant's More menu: classic.html#settings, #activities, #projects, #today.
+  const want = { today: "0", yesterday: "1", search: "search", activities: "activities", projects: "projects", settings: "settings" }[location.hash.slice(1)];
+  if (want) setView(want);
+  else load();
 })();

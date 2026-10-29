@@ -10,10 +10,19 @@ use std::time::Duration;
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2026-10-21";
+/// The everyday model: describing, planning searches, ranking, and the assistant.
 pub const MODEL: &str = "claude-haiku-5-5";
-/// Claude Haiku 5.5 list prices, in millionths of a dollar per token (prompts under 100K tokens).
-const IN_MICRO_PER_TOKEN: f64 = 0.10;
-const OUT_MICRO_PER_TOKEN: f64 = 0.50;
+/// The careful model, used only for hard jobs.
+pub const DEEP_MODEL: &str = "claude-sonnet-5-5";
+
+/// List prices in millionths of a dollar per token (input, output). Haiku's are for prompts
+/// under 100K tokens, which is all MemStor sends.
+fn prices(model: &str) -> (f64, f64) {
+    match model {
+        DEEP_MODEL => (2.0, 10.0),
+        _ => (0.10, 0.50),
+    }
+}
 
 /// Why a call failed, so the caller knows whether to retry, skip the file, or stop.
 #[derive(Debug)]
@@ -42,6 +51,8 @@ pub struct Spend {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub micro_usd: i64,
+    /// Which model answered ("" when not known).
+    pub model: &'static str,
 }
 
 impl Spend {
@@ -51,13 +62,22 @@ impl Spend {
     }
 
     fn from_usage(u: &Value) -> Spend {
+        Self::from_usage_for(MODEL, u)
+    }
+
+    /// Cost of one answer from `model`. Reading the cached part of a prompt costs a tenth of
+    /// the input price; writing it to the cache costs a quarter more.
+    pub(crate) fn from_usage_for(model: &str, u: &Value) -> Spend {
         let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-        let input = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+        let (fresh, wrote, read) = (n("input_tokens"), n("cache_creation_input_tokens"), n("cache_read_input_tokens"));
         let output = n("output_tokens");
+        let (pin, pout) = prices(model);
+        let micro = fresh as f64 * pin + wrote as f64 * pin * 1.25 + read as f64 * pin * 0.1 + output as f64 * pout;
         Spend {
-            input_tokens: input,
+            input_tokens: fresh + wrote + read,
             output_tokens: output,
-            micro_usd: (input as f64 * IN_MICRO_PER_TOKEN + output as f64 * OUT_MICRO_PER_TOKEN).ceil() as i64,
+            micro_usd: micro.ceil() as i64,
+            model: if model == DEEP_MODEL { DEEP_MODEL } else { MODEL },
         }
     }
 }
@@ -255,6 +275,17 @@ impl Claude {
         Self::check_status(status, &text)?;
         let v: Value = serde_json::from_str(&text).map_err(|_| CallError::Retry("Anthropic's answer wasn't readable".into()))?;
         Self::parse_message(&v)
+    }
+
+    /// A raw Messages call with a body built by the caller (the assistant's tool loop).
+    /// Returns the whole Message and its cost.
+    pub fn messages(&self, body: &Value) -> Result<(Value, Spend), CallError> {
+        let (status, text) = self.http("POST", URL, Some(body.to_string()))?;
+        Self::check_status(status, &text)?;
+        let v: Value = serde_json::from_str(&text).map_err(|_| CallError::Retry("Anthropic's answer wasn't readable".into()))?;
+        let model = body["model"].as_str().unwrap_or(MODEL);
+        let spend = Spend::from_usage_for(model, &v["usage"]);
+        Ok((v, spend))
     }
 
     fn call(&self, system: &str, content: Value, schema: Value, max_tokens: u32) -> Result<(Value, Spend), CallError> {
@@ -459,6 +490,9 @@ mod tests {
         let s = Spend::from_usage(&json!({"input_tokens": 800, "output_tokens": 250, "cache_read_input_tokens": 0}));
         // 800 × $0.10/M + 250 × $0.50/M = $0.000205
         assert_eq!(s.micro_usd, 205);
+        // Cached prompt: 1000 read at a tenth of the price, on Sonnet.
+        let s = Spend::from_usage_for(DEEP_MODEL, &json!({"input_tokens": 100, "output_tokens": 100, "cache_read_input_tokens": 1000}));
+        assert_eq!((s.micro_usd, s.input_tokens, s.model), (100 * 2 + 1000 / 5 + 100 * 10, 1100, DEEP_MODEL));
         assert_eq!(dollars(3_456_789), "$3.46");
     }
 
