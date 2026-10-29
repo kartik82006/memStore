@@ -71,8 +71,8 @@
   function cloudSection() {
     const c = st.c;
     const sec = section(
-      "Search by memory (AI)",
-      "Lets you search the way you remember things: \"girl in pink doing yoga\", \"the alumni meet edit\". Claude looks at a small preview of each photo and video and reads the text of documents, then writes a short description. Descriptions are stored only on this PC, encrypted."
+      "AI: the assistant and search by memory",
+      "Lets you ask in your own words (\"gather what I'm working on\", \"girl in pink doing yoga\"). Claude looks at a small preview of each photo and video and reads the text of documents, then writes a short description. Descriptions are stored only on this PC, encrypted. When you ask the assistant, your question, the \"Seeing\" line and the names of matching files go to Claude."
     );
     if (!c) return sec;
 
@@ -96,7 +96,7 @@
       cb.type = "checkbox";
       cb.checked = c.on;
       cb.addEventListener("change", () => act(() => invoke("set_cloud_on", { on: cb.checked })));
-      on.append(cb, el("span", null, "Describe my files with Claude"));
+      on.append(cb, el("span", null, "Use Claude for the assistant and to describe my files"));
       sec.append(on);
     }
 
@@ -185,6 +185,12 @@
       );
       sec.append(row);
     }
+    if (c.by_feature && c.by_feature.length) {
+      const NAMES = { assistant: "Assistant answers", describe: "Describing files", search: "Search by memory", stories: "Memory stories", groups: "Events and groups", setup: "Checking the key" };
+      const ul = el("ul", "st-facts st-spend-list");
+      c.by_feature.forEach(([f, n, cost]) => ul.append(el("li", null, `${NAMES[f] || f}: ${cost} (${n} call${n === 1 ? "" : "s"})`)));
+      sec.append(el("p", "pj-muted", "Where it went this month:"), ul);
+    }
     sec.append(el("p", "pj-muted", `${money(c.spent_total)} spent in total. Charged to your Anthropic account.`));
 
     const actions = el("div", "st-row");
@@ -268,6 +274,17 @@
     }
 
     wrap.append(cloudSection());
+
+    // PC awareness
+    const aw = section("Seeing what you're doing", "So \"this\", \"these\" and \"what I'm working on\" make sense, MemStor notes which app and window are in front and, in File Explorer, the open folder and selected files. It's kept on this PC (it also helps group your work) and sent to Claude only as the short \"Seeing\" line with a question. Private browser windows and password managers are left out.");
+    const awl = el("label", "st-toggle");
+    const awc = el("input");
+    awc.type = "checkbox";
+    awc.checked = s.pc_awareness;
+    awc.addEventListener("change", () => act(() => invoke("set_pc_awareness", { on: awc.checked })));
+    awl.append(awc, el("span", null, "Let MemStor see which app and window I'm using"));
+    aw.append(awl);
+    wrap.append(aw);
 
     // Recording
     const rec = section("Recording");

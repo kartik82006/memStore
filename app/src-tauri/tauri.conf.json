@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MemStor",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "identifier": "com.memstor.app",
   "build": {
     "frontendDist": "../ui"
@@ -12,12 +12,17 @@
       {
         "label": "main",
         "title": "MemStor",
-        "width": 720,
+        "width": 700,
         "height": 540,
         "minWidth": 480,
-        "minHeight": 360,
+        "minHeight": 320,
         "visible": false,
-        "center": true
+        "center": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "resizable": true
       }
     ],
     "security": {
@@ -26,7 +31,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

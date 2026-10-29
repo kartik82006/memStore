@@ -4,40 +4,49 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MemStor</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="assistant.css">
 </head>
 <body>
-  <header class="bar">
-    <input id="q" type="search" placeholder="Search files, or ask: the edit I made before Diwali…" autocomplete="off" spellcheck="false" autofocus>
-    <button id="ask" class="ask" type="button" hidden title="Search by memory with Claude (Shift+Enter)">Ask AI <span><kbd>Shift</kbd>+<kbd>Enter</kbd></span></button>
-    <button id="rec" class="rec" type="button" title="Pause or resume recording"><span class="dot"></span><span id="rec-label">Recording</span></button>
+  <header class="top" data-tauri-drag-region>
+    <span class="mark" aria-hidden="true" data-tauri-drag-region></span>
+    <input id="q" type="text" placeholder="Ask MemStor, or type a file name…" autocomplete="off" spellcheck="false" autofocus aria-label="Ask MemStor">
+    <button id="send" class="send" type="button" title="Ask (Enter)" aria-label="Ask">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="menu-wrap">
+      <button id="more" class="more" type="button" aria-haspopup="menu" aria-expanded="false" title="More">
+        <span id="rec-dot" class="dot" aria-hidden="true"></span>More
+      </button>
+      <div id="menu" class="menu" role="menu" hidden>
+        <button role="menuitem" data-go="ask:What did I work on today?">Today</button>
+        <button role="menuitem" data-go="ask:What did I work on yesterday?">Yesterday</button>
+        <button role="menuitem" data-go="changes">Changes I made with MemStor</button>
+        <hr>
+        <button role="menuitem" data-go="classic:activities">Activities</button>
+        <button role="menuitem" data-go="classic:projects">Projects</button>
+        <button role="menuitem" data-go="classic:search">All files and memories</button>
+        <button role="menuitem" data-go="classic:settings">Settings</button>
+        <hr>
+        <button role="menuitem" data-go="new-chat">New conversation</button>
+        <button role="menuitem" data-go="pause" id="pause-item">Pause recording</button>
+      </div>
+    </div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-view="search" aria-selected="true">Recent &amp; search</button>
-    <button role="tab" data-view="0" aria-selected="false">Today</button>
-    <button role="tab" data-view="1" aria-selected="false">Yesterday</button>
-    <button role="tab" data-view="activities" aria-selected="false">Activities</button>
-    <button role="tab" data-view="projects" aria-selected="false">Projects</button>
-    <button role="tab" data-view="settings" aria-selected="false" class="tab-right">Settings</button>
-  </nav>
+  <div id="seeing" class="seeing" hidden></div>
+  <div id="aware" class="aware" hidden></div>
 
-  <main id="list" tabindex="-1" aria-live="polite"></main>
+  <main id="feed" tabindex="-1" aria-live="polite"></main>
 
   <footer class="hint">
-    <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-    <span><kbd>Enter</kbd> open</span>
+    <span><kbd>Enter</kbd> ask</span>
+    <span><kbd>↓</kbd> pick a file</span>
     <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> show in folder</span>
     <span><kbd>Esc</kbd> hide</span>
-    <span id="ask-hint" hidden><kbd>Shift</kbd>+<kbd>Enter</kbd> ask AI</span>
     <span id="hotkey" class="right"></span>
   </footer>
 
   <div id="toast" role="status" hidden></div>
-  <script src="app.js"></script>
-  <script src="memories.js"></script>
-  <script src="settings.js"></script>
-  <script src="projects.js"></script>
-  <script src="activities.js"></script>
+  <script src="assistant.js"></script>
 </body>
 </html>

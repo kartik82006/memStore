@@ -1,19 +1,22 @@
-//! MemStor tray app. A background thread records file activity; a hidden window
-//! opens on Ctrl+Shift+Space (or from the tray) to search it.
+//! MemStor tray app: the assistant window and the tray icon. Recording runs in a separate
+//! background process (`memstor-app.exe --recorder`) that this app starts and watches.
+//! The window opens on Ctrl+Space (or Ctrl+Shift+Space, or from the tray).
 
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use chrono::{Duration, Local, TimeZone};
+use memstor_core::agent::Reply;
+use memstor_core::actions::Action;
+use memstor_core::context::{self, Chip, ContextCard, Foreground};
 use memstor_core::db::Db;
-use memstor_core::cloud::{self, Worker};
-use memstor_core::watch::{self, Control};
+use memstor_core::cloud;
 use memstor_core::projects::{DEFAULT_NEARBY_MINUTES, Reason};
-use memstor_core::{default_db_path, gather, recent};
+use memstor_core::{default_db_path, gather};
 use tauri_plugin_dialog::DialogExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
@@ -21,32 +24,20 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt;
 
-const HOTKEY_LABEL: &str = "Ctrl+Shift+Space";
+const HOTKEY_LABEL: &str = "Ctrl+Space";
+const HOTKEY_LABEL_LONG: &str = "Ctrl+Shift+Space";
 /// Meta key set once start-with-Windows has been turned on the first time.
 const AUTOSTART_SET_KEY: &str = "autostart_set";
 
 struct AppState {
-    /// The window's own connection; the collector thread has a separate one.
+    /// The window's own connection; the recorder process has its own.
     db: Mutex<Db>,
-    /// The running collector; replaced when the watched folders change.
-    collector: Mutex<(Arc<Control>, Vec<PathBuf>)>,
-    /// The cloud describer; restarted with the collector.
-    cloud: Mutex<Arc<Worker>>,
     db_path: PathBuf,
     pause_item: MenuItem<Wry>,
-    hotkey_ok: Mutex<bool>,
-}
-
-impl AppState {
-    fn control(&self) -> Arc<Control> {
-        self.collector.lock().map(|c| c.0.clone()).unwrap_or_default()
-    }
-    fn folders(&self) -> Vec<PathBuf> {
-        self.collector.lock().map(|c| c.1.clone()).unwrap_or_default()
-    }
-    fn worker(&self) -> Arc<Worker> {
-        self.cloud.lock().map(|w| w.clone()).unwrap_or_default()
-    }
+    /// The hotkeys that were registered, for the window's hint.
+    hotkeys: Mutex<Vec<String>>,
+    /// What was going on when the window was last called.
+    context: Mutex<ContextCard>,
 }
 
 #[derive(Serialize)]
@@ -142,11 +133,13 @@ fn show_in_folder(path: String, app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn status(state: State<AppState>) -> Status {
+    let db = state.db.lock();
+    let (paused, folders) = db.as_ref().map(|d| (d.recording_paused(), d.watched_folders())).unwrap_or_default();
     Status {
-        paused: state.control().is_paused(),
+        paused,
         db_path: state.db_path.display().to_string(),
-        folders: state.folders().iter().map(|f| f.display().to_string()).collect(),
-        hotkey: state.hotkey_ok.lock().ok().filter(|ok| **ok).map(|_| HOTKEY_LABEL.to_string()),
+        folders: folders.iter().map(|f| f.display().to_string()).collect(),
+        hotkey: state.hotkeys.lock().ok().and_then(|h| h.first().cloned()),
     }
 }
 
@@ -503,33 +496,9 @@ fn gather_memory(id: i64, app: AppHandle, state: State<AppState>) -> Result<Gath
 
 // ---------- settings ----------
 
-/// Folders to watch: the defaults plus the user's extra folders, minus excluded ones.
-fn watched_folders(db: &Db) -> Vec<PathBuf> {
-    let excluded = db.excluded_folders().unwrap_or_default();
-    let mut folders = watch::default_folders();
-    folders.extend(db.extra_folders().unwrap_or_default().into_iter().map(PathBuf::from));
-    folders.retain(|f| {
-        let f = f.display().to_string();
-        !excluded.iter().any(|e| e.eq_ignore_ascii_case(&f) || memstor_core::projects::is_inside(&f, e))
-    });
-    folders.dedup();
-    folders
-}
-
-/// Stop the collector and start a new one on the current folders (keeps the paused state).
+/// Ask the recorder to start again on the current folders.
 fn restart_collector(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let folders = watched_folders(&*state.db.lock().map_err(err)?);
-    let mut c = state.collector.lock().map_err(err)?;
-    c.0.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let control = Arc::new(Control::default());
-    control.set_paused(c.0.is_paused());
-    start_collector(state.db_path.clone(), folders.clone(), control.clone());
-    let mut w = state.cloud.lock().map_err(err)?;
-    w.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    *w = start_cloud(state.db_path.clone(), folders.clone(), control.clone());
-    *c = (control, folders);
-    Ok(())
+    app.state::<AppState>().db.lock().map_err(err)?.restart_recorder().map_err(err)
 }
 
 #[derive(Serialize)]
@@ -542,6 +511,7 @@ struct SettingsDto {
     db_path: String,
     db_bytes: u64,
     encrypted: bool,
+    pc_awareness: bool,
 }
 
 #[tauri::command]
@@ -550,7 +520,7 @@ fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsDto, S
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let wal = PathBuf::from(format!("{}-wal", state.db_path.display()));
     Ok(SettingsDto {
-        watching: state.folders().iter().map(|f| f.display().to_string()).collect(),
+        watching: db.watched_folders().iter().map(|f| f.display().to_string()).collect(),
         extra: db.extra_folders().map_err(err)?,
         excluded: db.excluded_folders().map_err(err)?,
         keep_days: db.keep_days().map_err(err)?,
@@ -558,6 +528,7 @@ fn get_settings(app: AppHandle, state: State<AppState>) -> Result<SettingsDto, S
         db_bytes: size(&state.db_path) + size(&wal),
         db_path: state.db_path.display().to_string(),
         encrypted: db.is_encrypted(),
+        pc_awareness: db.pc_awareness().map_err(err)?,
     })
 }
 
@@ -615,13 +586,21 @@ struct CloudDto {
     /// The last four characters of the saved key, to show which one it is.
     key_end: Option<String>,
     local_only: Vec<String>,
+    /// This month's spending per feature: (feature, calls, dollars text).
+    by_feature: Vec<(String, i64, String)>,
 }
 
 #[tauri::command]
 fn cloud_status(state: State<AppState>) -> Result<CloudDto, String> {
     let db = state.db.lock().map_err(err)?;
     let key_end = db.api_key().map_err(err)?.map(|k| k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect());
-    Ok(CloudDto { status: db.cloud_status(&state.worker().state()).map_err(err)?, key_end, local_only: db.local_only_folders().map_err(err)? })
+    let by_feature = db
+        .spend_by_feature()
+        .map_err(err)?
+        .into_iter()
+        .map(|(f, n, m)| (f, n, if m < 10_000 { "less than 1 cent".to_string() } else { memstor_core::claude::dollars(m) }))
+        .collect();
+    Ok(CloudDto { status: db.cloud_status(&db.worker_state()).map_err(err)?, key_end, local_only: db.local_only_folders().map_err(err)?, by_feature })
 }
 
 #[tauri::command]
@@ -659,13 +638,13 @@ fn allow_more(state: State<AppState>) -> Result<(), String> {
 
 /// Describe now, even while the PC is in use (still within the cap).
 #[tauri::command]
-fn index_now(state: State<AppState>) {
-    state.worker().force.store(true, std::sync::atomic::Ordering::Relaxed);
+fn index_now(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.poke_recorder("describe_now").map_err(err)
 }
 
 #[tauri::command]
-fn rescan_library(state: State<AppState>) {
-    state.worker().rescan.store(true, std::sync::atomic::Ordering::Relaxed);
+fn rescan_library(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.poke_recorder("rescan").map_err(err)
 }
 
 /// Files in this folder are never sent to the cloud. Returns how many descriptions were deleted.
@@ -797,7 +776,9 @@ async fn smart_search(question: String, app: AppHandle) -> Result<SmartDto, Stri
 
 fn apply_paused(app: &AppHandle, paused: bool) {
     let state = app.state::<AppState>();
-    state.control().set_paused(paused);
+    if let Ok(db) = state.db.lock() {
+        let _ = db.set_recording_paused(paused);
+    }
     let _ = state.pause_item.set_text(if paused { "Resume recording" } else { "Pause recording" });
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(if paused { "MemStor (paused)" } else { "MemStor (recording)" }));
@@ -814,59 +795,179 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-fn toggle_window(app: &AppHandle) {
+/// Hide the window if it's in front; otherwise note what's going on and show it.
+/// `hwnd` is the window in front before MemStor (0 from the tray).
+fn toggle_window(app: &AppHandle, hwnd: isize) {
     if let Some(w) = app.get_webview_window("main") {
         if w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) {
             let _ = w.hide();
         } else {
+            refresh_context(app, hwnd);
             show_window(app);
         }
     }
 }
 
-/// Starts the cloud describer on its own thread with its own connection. It does nothing
-/// until cloud descriptions are turned on and a key is saved.
-fn start_cloud(db_path: PathBuf, folders: Vec<PathBuf>, control: Arc<Control>) -> Arc<Worker> {
-    let worker = Arc::new(Worker::default());
-    let w = worker.clone();
-    std::thread::spawn(move || {
-        let db = match Db::open(&db_path) {
-            Ok(db) => db,
-            Err(e) => return eprintln!("cloud worker could not open the database: {e}"),
-        };
-        cloud::run_worker(&db, &folders, &w, &control.paused);
-    });
-    worker
+// ---------- the recorder process ----------
+
+/// Start the background recorder unless it's already running. It takes a lock, so a
+/// second copy started by mistake simply exits.
+fn ensure_recorder(db_path: &Path) {
+    let alive = Db::open(db_path).map(|db| db.recorder_alive()).unwrap_or(false);
+    if alive {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--recorder");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    if let Err(e) = cmd.spawn() {
+        eprintln!("could not start the recorder: {e}");
+    }
 }
 
-/// Starts the collector on its own thread with its own database connection.
-fn start_collector(db_path: PathBuf, folders: Vec<PathBuf>, control: Arc<Control>) {
+/// Run as the recorder: no window, no tray. Stops when the app asks it to.
+fn run_recorder() {
+    let quit = std::sync::atomic::AtomicBool::new(false);
+    if let Err(e) = memstor_core::recorder::run(&default_db_path(), &quit) {
+        eprintln!("recorder stopped: {e:#}");
+    }
+}
+
+// ---------- the assistant ----------
+
+#[derive(Serialize)]
+struct ContextDto {
+    chips: Vec<Chip>,
+    /// PC awareness hasn't been asked about yet.
+    ask_awareness: bool,
+    awareness: bool,
+    /// Claude is on with a working key and budget left.
+    ai_ready: bool,
+    recording: bool,
+    paused: bool,
+}
+
+/// Read what's going on, then tell the window. `hwnd` is the window that was in front when
+/// MemStor was called; 0 when opened from the tray (the last app used stands in).
+fn refresh_context(app: &AppHandle, hwnd: isize) {
+    let app = app.clone();
     std::thread::spawn(move || {
-        let db = match Db::open(&db_path) {
-            Ok(db) => db,
-            Err(e) => return eprintln!("collector could not open the database: {e}"),
+        let fg: Option<Foreground> = if hwnd != 0 { context::read_window(hwnd) } else { None };
+        let state = app.state::<AppState>();
+        let card = match Db::open(&state.db_path).and_then(|db| db.context_card(fg, chrono::Local::now().timestamp())) {
+            Ok(c) => c,
+            Err(e) => return eprintln!("could not read the context: {e}"),
         };
-        let recent_dir = recent::default_dir().filter(|d| d.is_dir());
-        if let Err(e) = watch::run(&db, &folders, recent_dir, &control) {
-            eprintln!("collector stopped: {e}");
+        if let Ok(mut c) = state.context.lock() {
+            *c = card;
         }
+        let _ = app.emit("context-ready", ());
     });
+}
+
+#[tauri::command]
+fn context_now(state: State<AppState>) -> Result<ContextDto, String> {
+    let db = state.db.lock().map_err(err)?;
+    let card = state.context.lock().map_err(err)?.clone();
+    Ok(ContextDto {
+        chips: card.chips(),
+        ask_awareness: db.pc_awareness_unasked().map_err(err)?,
+        awareness: db.pc_awareness().map_err(err)?,
+        ai_ready: db.assistant_ready().map_err(err)?.is_some(),
+        recording: db.recorder_alive(),
+        paused: db.recording_paused(),
+    })
+}
+
+#[tauri::command]
+fn set_pc_awareness(on: bool, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_pc_awareness(on).map_err(err)?;
+    if !on {
+        if let Ok(mut c) = state.context.lock() {
+            *c = c.without(&["window".into(), "folder".into(), "selected".into()]);
+        }
+    }
+    let _ = app.emit("context-ready", ());
+    Ok(())
+}
+
+/// Answer an ask. `off` lists the context chips the person switched off.
+#[tauri::command]
+async fn ask(text: String, off: Vec<String>, app: AppHandle) -> Result<Reply, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Type what you're looking for.".into());
+    }
+    let state = app.state::<AppState>();
+    let db_path = state.db_path.clone();
+    let card = state.context.lock().map_err(err)?.without(&off);
+    tauri::async_runtime::spawn_blocking(move || -> Result<Reply, String> {
+        let db = Db::open(&db_path).map_err(err)?;
+        db.ask(&text, &card).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+fn new_chat(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.clear_chat().map_err(err)
+}
+
+/// Make a change the person approved.
+#[tauri::command]
+fn apply_action(id: i64, state: State<AppState>) -> Result<Action, String> {
+    state.db.lock().map_err(err)?.apply_action(id).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn undo_action(id: i64, state: State<AppState>) -> Result<Action, String> {
+    state.db.lock().map_err(err)?.undo_action(id).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn recent_changes(state: State<AppState>) -> Result<Vec<Action>, String> {
+    state.db.lock().map_err(err)?.recent_actions(20).map_err(err)
+}
+
+/// Shortcuts to any files in one new folder, which is then opened.
+#[tauri::command]
+fn gather_paths(title: String, paths: Vec<String>, app: AppHandle) -> Result<GatherDto, String> {
+    if paths.is_empty() {
+        return Err("There are no files to gather.".into());
+    }
+    let g = gather::gather(&paths, &gather::default_root(), &title).map_err(err)?;
+    let folder = g.folder.display().to_string();
+    let _ = app.opener().open_path(&folder, None::<&str>);
+    Ok(GatherDto { folder, linked: g.linked, missing: g.missing.len() })
 }
 
 fn main() {
-    let hotkey = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+    if std::env::args().any(|a| a == "--recorder") {
+        return run_recorder();
+    }
+    let short = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
+    let long = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
 
     tauri::Builder::default()
         // Must be first: a second launch just shows the existing window.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| toggle_window(app, 0)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, sc, event| {
-                    if sc == &hotkey && event.state() == ShortcutState::Pressed {
-                        toggle_window(app);
+                    if (sc == &short || sc == &long) && event.state() == ShortcutState::Pressed {
+                        // Note the window in front before MemStor takes focus.
+                        toggle_window(app, context::foreground_window());
                     }
                 })
                 .build(),
@@ -874,69 +975,84 @@ fn main() {
         .setup(move |app| {
             let db_path = default_db_path();
             let db = Db::open(&db_path)?;
-            let folders = watched_folders(&db);
-            let control = Arc::new(Control::default());
             // Start with Windows by default, once; the user can turn it off in Settings.
             if db.get_meta(AUTOSTART_SET_KEY).ok().flatten().is_none() {
                 let _ = app.autolaunch().enable();
                 let _ = db.set_meta(AUTOSTART_SET_KEY, 1);
             }
+            let paused = db.recording_paused();
 
-            let open_item = MenuItem::with_id(app, "open", format!("Search files\t{HOTKEY_LABEL}"), true, None::<&str>)?;
-            let pause_item = MenuItem::with_id(app, "pause", "Pause recording", true, None::<&str>)?;
+            let open_item = MenuItem::with_id(app, "open", "Open MemStor", true, None::<&str>)?;
+            let pause_item = MenuItem::with_id(app, "pause", if paused { "Resume recording" } else { "Pause recording" }, true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit MemStor", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(app, &[&open_item, &pause_item, &sep, &quit_item])?;
 
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("app icon is bundled"))
-                .tooltip("MemStor (recording)")
+                .tooltip(if paused { "MemStor (paused)" } else { "MemStor (recording)" })
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => show_window(app),
+                    "open" => toggle_window(app, 0),
                     "pause" => {
-                        let paused = app.state::<AppState>().control().is_paused();
+                        let paused = app.state::<AppState>().db.lock().map(|d| d.recording_paused()).unwrap_or(false);
                         apply_paused(app, !paused);
                     }
                     "quit" => {
-                        let state = app.state::<AppState>();
-                        state.control().stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                        state.worker().stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Quitting stops recording too.
+                        if let Ok(db) = app.state::<AppState>().db.lock() {
+                            let _ = db.stop_recorder();
+                        }
                         app.exit(0);
                     }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        toggle_window(tray.app_handle());
+                        toggle_window(tray.app_handle(), 0);
                     }
                 })
                 .build(app)?;
 
-            // Another app may already own the hotkey; the tray still works without it.
-            let hotkey_ok = match app.global_shortcut().register(hotkey) {
-                Ok(()) => true,
-                Err(e) => {
-                    eprintln!("could not register {HOTKEY_LABEL}: {e}");
-                    false
+            // Ctrl+Space, unless several keyboard languages are installed (it often switches
+            // them). Ctrl+Shift+Space always works too. Another app may own either key.
+            let mut hotkeys = Vec::new();
+            let mut keys = vec![(long, HOTKEY_LABEL_LONG)];
+            if !context::several_keyboard_layouts() {
+                keys.insert(0, (short, HOTKEY_LABEL));
+            }
+            for (key, label) in keys {
+                match app.global_shortcut().register(key) {
+                    Ok(()) => hotkeys.push(label.to_string()),
+                    Err(e) => eprintln!("could not register {label}: {e}"),
                 }
-            };
+            }
 
-            start_collector(db_path.clone(), folders.clone(), control.clone());
-            let worker = start_cloud(db_path.clone(), folders.clone(), control.clone());
+            // A new start clears an old "stop" so the recorder runs again.
+            let _ = db.set_kv("recorder_stop", None);
+            ensure_recorder(&db_path);
+            // Restart the recorder if it ever stops while the app is running.
+            let watch_path = db_path.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                let stopping = Db::open(&watch_path).ok().and_then(|db| db.kv("recorder_stop").ok().flatten()).is_some();
+                if !stopping {
+                    ensure_recorder(&watch_path);
+                }
+            });
+
             let start_visible = std::env::args().any(|a| a == "--show");
             app.manage(AppState {
                 db: Mutex::new(db),
-                collector: Mutex::new((control, folders)),
-                cloud: Mutex::new(worker),
                 db_path,
                 pause_item,
-                hotkey_ok: Mutex::new(hotkey_ok),
+                hotkeys: Mutex::new(hotkeys),
+                context: Mutex::new(ContextCard::default()),
             });
             // Starts hidden in the tray, unless launched with --show (e.g. from the Start menu).
             if start_visible {
-                show_window(app.handle());
+                toggle_window(app.handle(), 0);
             }
             Ok(())
         })
@@ -948,6 +1064,14 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            context_now,
+            set_pc_awareness,
+            ask,
+            new_chat,
+            apply_action,
+            undo_action,
+            recent_changes,
+            gather_paths,
             cloud_status,
             set_cloud_on,
             set_api_key,

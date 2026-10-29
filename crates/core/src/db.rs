@@ -160,6 +160,9 @@ impl Db {
         conn.execute_batch(crate::settings::SCHEMA)?;
         conn.execute_batch(crate::cloud::SCHEMA)?;
         conn.execute_batch(crate::groups::SCHEMA)?;
+        conn.execute_batch(crate::actions::SCHEMA)?;
+        conn.execute_batch(crate::context::SCHEMA)?;
+        conn.execute_batch(crate::agent::SCHEMA)?;
         Ok(Self { conn, excluded: Default::default(), encrypted: false })
     }
 
