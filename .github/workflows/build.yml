@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -26,6 +29,22 @@ jobs:
             target/release/memstor.exe
             target/release/memstor-app.exe
             target/release/bundle/nsis/*.exe
+      # Each new version that lands on main becomes a GitHub release with the installer, so
+      # there's one stable download link and the app's update check can find it.
+      - name: Publish a release for a new version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released"
+            exit 0
+          fi
+          gh release create "v$version" target/release/bundle/nsis/*.exe target/release/memstor.exe \
+            --title "MemStor $version" \
+            --notes "Download **MemStor_${version}_x64-setup.exe** below and run it. Windows may warn that the installer isn't signed yet: choose *More info → Run anyway*. MemStor checks for new versions once a day and shows a note when one is out."
 
   linux-tests:
     runs-on: ubuntu-latest

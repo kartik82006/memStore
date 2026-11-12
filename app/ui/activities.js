@@ -3,10 +3,10 @@
 // Uses invoke, el, hm, when, KIND_LABEL and showToast from app.js.
 
 (() => {
-  const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["week", "Last 7 days"]];
+  const RANGES = [["today", "Today"], ["yesterday", "Yesterday"], ["week", "Last 7 days"], ["memories", "All memories"], ["groups", "Events & groups"]];
   const SHOW_FILES = 6; // files shown before "Show all"
 
-  const st = { range: "today", list: [], open: new Set(), busy: false, loaded: false };
+  const st = { range: "today", list: [], memories: [], groups: [], open: new Set(), busy: false, loaded: false };
   let root;
 
   function button(text, cls, onClick, title) {
@@ -31,7 +31,9 @@
 
   async function refresh() {
     try {
-      st.list = await invoke("list_activities", { range: st.range });
+      if (st.range === "memories") st.memories = await invoke("list_memories");
+      else if (st.range === "groups") st.groups = await invoke("list_groups");
+      else st.list = await invoke("list_activities", { range: st.range });
     } catch (e) {
       st.list = [];
       showToast(String(e));
@@ -115,6 +117,58 @@
     return box;
   }
 
+  function dateOnly(ts) {
+    return new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  function plural(n, word) {
+    return `${n} ${word}${n === 1 ? "" : "s"}`;
+  }
+
+  // An event or a group of files made for the same people, from the AI descriptions.
+  function groupCard(g) {
+    const box = el("article", "ac-card");
+    const head = el("header", "ac-head");
+    const title = el("div", "ac-title");
+    title.append(el("span", "ac-work " + (g.kind === "event" ? "photos" : "files"), g.kind === "event" ? "Event" : "Made for"));
+    title.append(el("h3", null, g.name));
+    const a = dateOnly(g.start), b = dateOnly(g.end);
+    const counts = [g.photos && plural(g.photos, "photo"), g.videos && plural(g.videos, "video"), g.documents && plural(g.documents, "document")].filter(Boolean);
+    head.append(title, el("span", "ac-meta", `${a === b ? a : `${a} – ${b}`} · ${counts.join(", ")}`));
+    box.append(head);
+    const key = "g:" + g.name;
+    const all = st.open.has(key);
+    const files = el("div", "ac-files");
+    (all ? g.files : g.files.slice(0, SHOW_FILES)).forEach((f) => {
+      const row = el("div", "mem-file" + (f.exists ? "" : " gone"));
+      row.title = f.summary ? `${f.path}\n\n${f.summary}` : f.path;
+      row.append(el("span", "name", f.name));
+      const folder = el("span", "folder");
+      folder.append(el("bdi", null, f.folder));
+      row.append(folder);
+      if (f.exists) row.addEventListener("dblclick", () => invoke("open_file", { path: f.path }).catch((e) => showToast(String(e))));
+      files.append(row);
+    });
+    box.append(files);
+    const bar = el("div", "ac-bar");
+    const present = g.files.filter((f) => f.exists).map((f) => f.path);
+    bar.append(
+      button(`Gather ${present.length} files`, "btn primary", () =>
+        act(async () => {
+          const r = await invoke("gather_group", { name: g.name, paths: present });
+          showToast(`Made ${r.linked} shortcut(s) in ${r.folder}.`);
+        }), "Makes a folder of shortcuts in Documents\\MemStor Gathered. Your files stay where they are.")
+    );
+    if (g.files.length > SHOW_FILES) {
+      bar.append(button(all ? "Show fewer" : `Show all ${g.files.length}`, "btn subtle", () => {
+        all ? st.open.delete(key) : st.open.add(key);
+        render();
+      }));
+    }
+    box.append(bar);
+    return box;
+  }
+
   function render() {
     if (!root || view !== "activities") return;
     const wrap = el("div", "ac");
@@ -123,8 +177,42 @@
     RANGES.forEach(([k, label]) =>
       seg.append(button(label, k === st.range ? "on" : "", () => { st.range = k; refresh(); }))
     );
-    top.append(seg, el("span", "pj-muted", "Grouped from when, where and how you used each file. Nothing leaves this PC."));
+    top.append(
+      seg,
+      el("span", "pj-muted", st.range === "groups"
+        ? "Grouped by the event in them or who they were made for, from the AI descriptions."
+        : "Grouped on this PC from when, where and how you used each file.")
+    );
     wrap.append(top);
+
+    if (st.range === "groups") {
+      if (st.loaded && !st.groups.length) {
+        const box = el("div", "empty");
+        box.append(el("strong", null, "No events or groups yet"));
+        box.append(
+          "Once Search by memory has described your photos, videos and documents, the ones from the same event or made for the same club, client or organisation show up here together."
+        );
+        wrap.append(box);
+      }
+      st.groups.forEach((g) => wrap.append(groupCard(g)));
+      root.replaceChildren(wrap);
+      return;
+    }
+
+    if (st.range === "memories") {
+      if (st.loaded && !st.memories.length) {
+        const box = el("div", "empty");
+        box.append(el("strong", null, "No memories yet"));
+        box.append(
+          "Each night MemStor saves the day's activities as memories, with their dates and how much work went in. " +
+            "Then you can search for them in plain words, like \"the edit I made before Diwali\"."
+        );
+        wrap.append(box);
+      }
+      st.memories.forEach((m) => wrap.append(window.Memories.card(m, refresh)));
+      root.replaceChildren(wrap);
+      return;
+    }
 
     if (st.loaded && !st.list.length) {
       const box = el("div", "empty");

@@ -3,21 +3,71 @@
 Find files on your computer by what you were doing, not only by what you named them.
 
 MemStor runs quietly in the Windows tray and records which files you create, edit, rename and
-open. Press **Ctrl+Shift+Space** anywhere to search that history or see what you worked on
-today. Everything stays in a local database on your PC. Nothing is sent anywhere.
+open. Press **Ctrl+Space** (or **Ctrl+Shift+Space**) anywhere and a small assistant bar pops up:
+type a file name, or ask the way you'd ask a friend ("the poster I made before Diwali", "rename
+these properly"). Everything stays in an encrypted database on your PC. Nothing is sent anywhere
+unless you turn on AI, which is off until you add your own Claude API key.
 
-The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ
+The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ ·
+the assistant plan: https://claude.ai/artifact/2in8QasMoZRc86qziUNCa7
+
+## New in 0.7: ready for everyday use
+
+- **First-run welcome.** The first time MemStor starts, its window opens by itself and walks
+  through what it records, the shortcut key, and the optional AI, in three short steps.
+- **Search inside files, free and on your PC.** MemStor quietly reads the words inside your
+  documents (PDF, Word, PowerPoint, Excel, text), the title and author saved in Office files,
+  and the date and camera inside photos. Typing "alumni meet" now finds the doc that mentions
+  it, even if it's called `notes 3.txt`. It reads quickly while you're away from the PC and
+  slowly while you're using it. Documents that look like IDs or bank details are noted but
+  their words aren't kept.
+- **Forgiving search.** Typos ("budjet"), everyday words ("cv" finds your resume, "ppt",
+  "pic", "bday", "shaadi"), kinds of file ("poster photo" only shows pictures, "sheet" only
+  spreadsheets), and apps ("the photoshop file" finds files changed while Photoshop was in
+  front, when "Seeing" is on). Results say why they matched.
+- **Update note.** Once a day MemStor asks GitHub for the newest version number and shows a
+  "Get it" note when one is out. Turn it off under More → Help and updates.
+- **Help and problem reports.** More → Help and updates shows what MemStor knows, opens its
+  problem log (`%LOCALAPPDATA%\MemStor\logs`), and copies the details for a bug report.
+- **One download page.** Each new version on `main` is published under
+  [Releases](https://github.com/kartik82006/memStore/releases/latest).
+
+## The assistant (v0.6)
+
+- **Ctrl+Space** opens the bar over whatever you're doing (skipped if you have more than one
+  keyboard layout, since Windows uses it to switch them). **Ctrl+Shift+Space** always works, and
+  so does the tray icon. **Esc** or clicking away hides it.
+- Typing shows matching files at once (free, on your PC). **Enter** asks.
+- Simple asks ("today", "yesterday", "open the budget sheet", "budget kholo") are answered on the
+  PC with no AI. Everything else goes to Claude Haiku, which answers by using MemStor's own
+  skills (find files, recent files, a day, activities, search by memory, similar files, file info,
+  events, projects, open, gather, rename, move). Answers come back as cards you can open or gather.
+- **Seeing**: the bar shows what it knows about what you're doing right now (the app in front,
+  the window title, the Explorer folder and selected files, today's activity). Click a chip to
+  leave it out of your next question. Turn it off entirely under Settings → Seeing what you're
+  doing. Private windows and local-only folders are never shown.
+- **Changes**: rename and move are always shown as a plan first. Nothing happens until you press
+  **Do it**, and each change can be undone for 30 days (More → Changes I made with MemStor).
+  Files are never overwritten or deleted, and system folders are off limits.
+- The older views (Activities, Projects, All files and memories, Settings) are under **More**.
+- Every AI call is logged with what it was for (assistant, describe, search, …), and Settings
+  shows this month's spend per feature.
+- The recorder now runs as its own background process (`memstor-app.exe --recorder`), so it
+  keeps recording while the window is busy or reloading. The app restarts it if it stops.
 
 ![Search window](docs/search-window.png)
 
 ## Get it
 
-Every push builds Windows downloads on GitHub Actions. Open the latest run under
-**Actions → Build**, download `memstor-windows`, and run the `MemStor_…_x64-setup.exe` installer.
+Download `MemStor_…_x64-setup.exe` from the
+[latest release](https://github.com/kartik82006/memStore/releases/latest) and run it. Windows
+may warn that the installer isn't signed yet: choose **More info → Run anyway**.
+
+Builds of pull requests are under **Actions → Build** (download `memstor-windows`).
 
 ## Using the tray app (M1)
 
-- MemStor starts hidden in the tray. **Left-click** the icon or press **Ctrl+Shift+Space** to open search.
+- MemStor starts hidden in the tray. **Left-click** the icon or press **Ctrl+Space** / **Ctrl+Shift+Space** to open it.
 - Type part of a file name or a folder it was in. With an empty box you see your most recent files.
 - **Today** and **Yesterday** list every file you touched, with the time span and what happened.
 - **Enter** opens the file, **Ctrl+Enter** shows it in Explorer, **Esc** hides the window.
@@ -58,6 +108,81 @@ Hover a file and click × if it doesn't belong; MemStor won't group those files 
 
 From the command line: `memstor activities --date 2026-10-27`.
 
+## Memories: "do you remember…"
+
+Each night MemStor saves the day's activities as **memories**: what the work was, its dates,
+how much time went into it, and how much of it happened late at night. Work that continues over
+several days becomes one memory. Then you can ask in plain words in the search box:
+
+- "the project I did on a tight deadline before Diwali"
+- "the edit for that organisation with alumni pics"
+- "late night essay last month", "budget sheet in March"
+
+MemStor understands times (today, last week, last month, a month, a year, "3 weeks ago", and
+festivals and holidays like Diwali, Holi, Eid or Christmas with before / after / around), kinds
+of work (edit, deck, sheet, photos, report…), how it felt (deadline, rush, all-nighter) and any
+other words, which it matches against names of files and folders. It all runs on your PC, with no AI
+service. Rename a memory to the words you'd use for it (the club, the client), or forget it.
+All memories are listed under Activities → All memories.
+
+![Memory search](docs/recall.png)
+
+## Search by memory (AI), optional
+
+Search the way you remember things: "video of a girl in pink doing yoga", "the edit for the
+organisation with alumni pics". Type the question and press **Shift+Enter** (or **Ask AI**).
+
+- **Off by default.** Paste your own Claude API key (console.anthropic.com) at the top of
+  Settings and press "Save key and turn on". You pay Anthropic directly; MemStor has no server.
+- **What is sent:** a small preview (768 px at most) of each photo, four moments of each video in
+  one picture (with its length), and up to 3,000 words of each document's text, to the Claude API (Haiku 5.5). Claude writes a short
+  description: people and what they wear and do, place, objects, colours, visible text, event,
+  topic, who it was for.
+- **What is kept:** the descriptions, only on your PC, in the encrypted database. Your files never
+  leave the PC.
+- **Never sent:** files in "Never record" or "Keep on this PC" folders, screenshots, duplicates,
+  and documents that look like IDs, bank or card details, or passwords (Aadhaar, PAN and card
+  numbers are checked on the PC first).
+- **Spending limits:** $5 for the first pass over your files, then $1 a month. It stops at the
+  limit and asks before spending more ("Allow $1 more"). A search costs well under a cent.
+- **Half price in batches:** when 20 or more files are waiting, they go to Anthropic as one batch
+  at half price (answers usually within an hour). Each batch is deleted from Anthropic as soon as
+  its answers are collected. A few new files are described right away.
+- **Runs when you are away:** describing waits until the PC has been idle for 2 minutes, unless you
+  press "Describe now".
+- **Searching:** Claude turns your sentence into dates, kinds of work and details; MemStor searches
+  the descriptions and memories on the PC; Claude then picks the best matches and says why. Without
+  a key, the local memory search above still works.
+- **Follow-ups:** not the right one? Add a detail under the results ("older, from college") and
+  search again. **More like this** on any file finds others with the same event, people or place
+  (on the PC, free).
+- **Events & groups** (Activities tab): described files grouped by the event in them or who they
+  were made for ("NSS Alumni Meet 2026", "Rotaract Club Delhi"), ready to gather in one folder.
+  Different spellings of the same name are merged by one small Claude call.
+- Memories also get a one-line story ("A four-day rush to cut the alumni meet video…").
+- "Delete all descriptions" removes them all; turning the feature off stops all sending.
+
+![Ask AI](docs/ask-ai.png)
+
+![Search by memory settings](docs/cloud-settings.png)
+
+![More like this](docs/more-like-this.png)
+
+![Events and groups](docs/events-groups.png)
+
+## Privacy and settings
+
+- Everything stays on your PC. With Search by memory off, MemStor makes no network connections.
+- The database is encrypted (SQLCipher). Its key is sealed with Windows DPAPI, so only your
+  Windows account on this PC can open it. A database from an older version is encrypted on first start.
+- MemStor records file names, folders and times. It reads inside files only to describe them when
+  Search by memory is on.
+- **Settings**: start with Windows (on by default), extra folders to watch, folders never to
+  record (adding one also deletes its history), keep history for 3 months / 6 months / 1 year /
+  forever, and delete all history.
+
+![Settings](docs/settings.png)
+
 ## What it records
 
 | Source | Gives us | Needs admin? |
@@ -85,7 +210,8 @@ Windows, Program Files and ProgramData are skipped.
 
 It also skips Office lock files (`~$x.docx`), temp and partial downloads, `node_modules` and build
 output. Saving through a temp file, as Word and Excel do, counts as one edit of the real file, and a
-rename keeps the file's history. Only paths, names and times are stored. File contents are never read.
+rename keeps the file's history. Only paths, names and times are stored, plus descriptions when
+Search by memory is on.
 
 The database is `%LOCALAPPDATA%\MemStor\memstor.db`.
 
@@ -98,6 +224,9 @@ memstor watch                 # record without the tray app
 memstor today
 memstor day 2026-10-27
 memstor search thesis chapter
+memstor activities --date 2026-10-27
+memstor recall the edit I made before Diwali
+memstor remember              # save finished days as memories now
 ```
 
 ## Layout
@@ -108,9 +237,20 @@ crates/core      collector + database (shared)
   src/db.rs        SQLite schema, recording, day listing, full-text search
   src/recent.rs    Windows Recent Items shortcuts
   src/watch.rs     folder watcher, pause/stop control
+  src/memory.rs    memories (finished pieces of work), src/recall.rs local "do you remember" search
+  src/extract.rs   document text, photo dates, previews, privacy checks (all on the PC)
+  src/claude.rs    Claude API calls (describe, plan a search, rerank, stories)
+  src/cloud.rs     describe queue, batches, spending limits, background worker, smart search
+  src/groups.rs    events and groups from the descriptions
+  src/winvideo.rs  video frames via Windows Media Foundation (loaded at run time)
+  src/recorder.rs  the background recorder process and how the app controls it
+  src/context.rs   what you're doing now: app in front, window title, Explorer selection
+  src/skills.rs    the one list of things MemStor can do (used by the assistant, later by voice/MCP)
+  src/agent.rs     the assistant: no-AI fast path, Claude tool loop, short chat history
+  src/actions.rs   rename/move plans, apply with rollback, undo
 crates/cli       the `memstor` command
 app/src-tauri    the tray app (Tauri 2): tray menu, hotkey, commands for the window
-app/ui           the search window (plain HTML/CSS/JS, no build step)
+app/ui           index.html = assistant bar, classic.html = the older views (plain HTML/CSS/JS)
 ```
 
 ## Build
@@ -128,5 +268,5 @@ On Linux the app needs `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 
 ## Next
 
-- Active-window titles as an opt-in signal.
-- Start with Windows (autostart) and a settings page for watched folders.
+- v0.7: push-to-talk voice, Sonnet step-up for hard questions.
+- v0.8: optional nudges, Recycle Bin delete with undo, MCP server (off by default).

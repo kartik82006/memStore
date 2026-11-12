@@ -32,6 +32,8 @@ const HISTORY_DAYS: i64 = 30;
 const LINK_SCORE: f32 = 2.0;
 /// Sessions bigger than this (a bulk copy, a photo import) are only grouped by folder.
 const BIG_SESSION: usize = 400;
+/// Above this many files in the range, skip the across-sessions pass (it compares every pair).
+const CROSS_SESSION_MAX: usize = 2000;
 
 /// Words in file names that say nothing about the topic.
 const STOPWORDS: &[&str] = &[
@@ -290,6 +292,28 @@ impl Db {
             }
         }
 
+        // Across sessions of the same range, link files that clearly share a topic: the same
+        // project folder plus a name word, or two name words (an export made after a break).
+        if paths.len() <= CROSS_SESSION_MAX {
+            for a in 0..paths.len() {
+                for b in a + 1..paths.len() {
+                    if blocked.contains(&pair_owned(&paths[a], &paths[b])) {
+                        continue;
+                    }
+                    let mut score = (words[a].intersection(&words[b]).count() as f32 * 1.5).min(3.0);
+                    if score == 0.0 {
+                        continue;
+                    }
+                    if folder[a].is_some() && folder[a] == folder[b] {
+                        score += 2.0;
+                    }
+                    if score >= 3.0 {
+                        link(&mut uf, a, b);
+                    }
+                }
+            }
+        }
+
         let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
         for i in 0..paths.len() {
             if linked[i] {
@@ -350,6 +374,16 @@ fn work_of(cats: &[&str]) -> Work {
     }
 }
 
+/// A topic from shared words or a shared project folder, or None when the files share neither.
+pub(crate) fn shared_topic(paths: &[String], home: Option<&Path>) -> Option<String> {
+    let words: Vec<HashSet<String>> = paths.iter().map(|p| name_words(p)).collect();
+    let folder: Vec<Option<String>> =
+        paths.iter().map(|p| project_folder_for(Path::new(p), home).map(|f| f.to_string_lossy().into_owned())).collect();
+    let g: Vec<usize> = (0..paths.len()).collect();
+    let t = topic_of(&g, paths, &words, &folder, &[]);
+    (t != "Untitled").then_some(t)
+}
+
 fn capitalize(w: &str) -> String {
     let mut c = w.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
@@ -368,8 +402,10 @@ fn topic_of(g: &[usize], paths: &[String], words: &[HashSet<String>], folder: &[
     shared.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.len().cmp(&a.0.len())).then(a.0.cmp(b.0)));
     if let Some((w, c)) = shared.first() {
         // Two words that always appear together read better as a phrase: "Trip vlog".
-        if let Some((w2, _)) = shared.get(1).filter(|(_, c2)| c2 == c) {
-            let first = paths[g[0]].to_lowercase();
+        if let Some((w2, _)) = shared.get(1).filter(|(_, c2)| *c2 * 3 >= *c * 2) {
+            // Word order from a file name that has both.
+            let both = g.iter().find(|&&i| words[i].contains(*w) && words[i].contains(*w2)).copied().unwrap_or(g[0]);
+            let first = paths[both].to_lowercase();
             let (a, b) = if first.find(w) <= first.find(w2) { (*w, *w2) } else { (*w2, *w) };
             return format!("{} {}", capitalize(a), b);
         }

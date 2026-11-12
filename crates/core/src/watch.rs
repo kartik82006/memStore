@@ -223,6 +223,22 @@ impl Control {
 
 /// Watches `folders` and re-reads Recent Items every minute until `control.stop` is set.
 /// While paused, events are dropped and nothing is written.
+/// How often to save finished days as memories (it only does work after midnight).
+const REMEMBER_EVERY: Duration = Duration::from_secs(30 * 60);
+
+fn remember(db: &Db) {
+    match db.prune(now()) {
+        Ok(0) => {}
+        Ok(n) => println!("removed {n} event(s) older than the keep-history setting"),
+        Err(e) => eprintln!("could not remove old history: {e}"),
+    }
+    match db.remember_finished_days() {
+        Ok(0) => {}
+        Ok(n) => println!("saved {n} activit{} as memories", if n == 1 { "y" } else { "ies" }),
+        Err(e) => eprintln!("could not save memories: {e}"),
+    }
+}
+
 pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>, control: &Control) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx)?;
@@ -249,8 +265,10 @@ pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>, control: &
         }
     }
 
+    remember(db);
     let mut rec = Recorder::new(db);
     let mut last_recent = std::time::Instant::now();
+    let mut last_remember = std::time::Instant::now();
     while !control.stop.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Ok(ev)) if !control.is_paused() => {
@@ -269,6 +287,10 @@ pub fn run(db: &Db, folders: &[PathBuf], recent_dir: Option<PathBuf>, control: &
             // picked up later by the catch-up scan.
             if let Err(e) = db.set_meta(ALIVE_KEY, now()) {
                 eprintln!("could not save heartbeat: {e}");
+            }
+            if last_remember.elapsed() >= REMEMBER_EVERY {
+                last_remember = std::time::Instant::now();
+                remember(db);
             }
             if let (Some(dir), false) = (&recent_dir, control.is_paused()) {
                 if let Err(e) = recent::scan(dir, db) {
