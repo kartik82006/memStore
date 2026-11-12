@@ -23,6 +23,10 @@ const st = {
   view: "chat", // "chat" or "changes"
   changes: [],
   opened: new Set(), // turns whose "open" card already ran
+  welcome: null, // what welcome_info returned
+  step: 0, // welcome step
+  awareChoice: true, // welcome: keep "Seeing" on
+  report: "", // help view: the problem report text
 };
 let quickTimer;
 
@@ -101,8 +105,9 @@ function renderContext() {
   const c = st.ctx;
   seeing.replaceChildren();
   aware.replaceChildren();
-  aware.hidden = !(c && c.ask_awareness);
-  if (c && c.ask_awareness) {
+  const askAware = c && c.ask_awareness && !(st.welcome && st.welcome.show);
+  aware.hidden = !askAware;
+  if (askAware) {
     aware.append(
       el("p", null, "So “this” and “what I'm working on” make sense, MemStor can note which app and window you're using, and what's selected in File Explorer. It stays on this PC and goes to Claude only as one short line with your question."),
     );
@@ -113,7 +118,7 @@ function renderContext() {
     );
     aware.append(row);
   }
-  const chips = c ? c.chips : [];
+  const chips = c && !(st.welcome && st.welcome.show) ? c.chips : [];
   seeing.hidden = !chips.length;
   if (!chips.length) return;
   seeing.append(el("span", "seeing-label", "Seeing"));
@@ -293,6 +298,8 @@ function turnView(t) {
 
 function emptyView() {
   const box = el("div", "empty");
+  const u = updateNote();
+  if (u) box.append(u);
   box.append(el("h2", null, "What are you looking for?"));
   box.append(el("p", "muted", "Type part of a file name, or ask the way you'd ask a friend."));
   const sug = el("div", "suggest");
@@ -317,7 +324,7 @@ function emptyView() {
 function quickView() {
   const box = el("section", "quick");
   const head = el("header", "quick-head");
-  head.append(el("span", null, st.quick.files.length ? "Files named like this" : "No file names match"), el("span", "muted", "Enter asks MemStor"));
+  head.append(el("span", null, st.quick.files.length ? "Files that match" : "No files match yet"), el("span", "muted", "Enter asks MemStor"));
   box.append(head);
   st.quick.files.forEach((f, i) => box.append(fileRow(f, { selected: i === st.quick.sel })));
   return box;
@@ -335,7 +342,9 @@ function changesView() {
 
 function render() {
   feed.replaceChildren();
+  if (st.welcome && st.welcome.show) return feed.append(welcomeView());
   if (st.view === "changes") return feed.append(changesView());
+  if (st.view === "help") return feed.append(helpView());
   if (q.value.trim() && st.quick.query === q.value.trim()) {
     feed.append(quickView());
     return;
@@ -343,6 +352,126 @@ function render() {
   if (!st.turns.length) return feed.append(emptyView());
   st.turns.forEach((t) => feed.append(turnView(t)));
   feed.scrollTop = feed.scrollHeight;
+}
+
+// ---------- first run ----------
+
+function welcomeView() {
+  const w = st.welcome;
+  const box = el("section", "welcome");
+  const steps = ["Remembers", "Opens anywhere", "Ask in your words"];
+  const dots = el("ol", "steps-dots");
+  steps.forEach((name, i) => dots.append(el("li", i === st.step ? "on" : i < st.step ? "done" : "", name)));
+  box.append(dots);
+  const next = (label = "Next") => button(label, "btn primary", () => { st.step += 1; render(); });
+  const bar = el("div", "card-bar");
+
+  if (st.step === 0) {
+    box.append(el("h2", null, "MemStor remembers your files for you"));
+    box.append(el("p", null, "From now on it notes every document, photo, video and sheet you create, edit, rename or open, and when. It reads the words inside documents and the date inside photos, so later you can find them by what you remember."));
+    const ul = el("ul", "plain");
+    ul.append(
+      el("li", null, "Everything stays on this PC, in an encrypted file only your Windows account can open."),
+      el("li", null, "Programs and system files are ignored. Nothing is moved, changed or deleted."),
+      el("li", null, `Watching ${w.folders.length} folder${w.folders.length === 1 ? "" : "s"} (your user folders and other drives). Change this in Settings.`),
+    );
+    box.append(ul);
+    box.append(el("p", "muted", w.files_known ? `Already found ${w.files_known.toLocaleString()} files from the last two weeks.` : "Looking back at the last two weeks of files…"));
+    bar.append(next());
+  } else if (st.step === 1) {
+    box.append(el("h2", null, "Open it from anywhere"));
+    const key = el("p", "big-key");
+    (w.hotkey || "Ctrl+Shift+Space").split("+").forEach((k, i) => { if (i) key.append(" + "); key.append(el("kbd", null, k)); });
+    box.append(key);
+    box.append(el("p", null, "Press it in any app and this bar pops up. Type part of a name, or ask: “the poster I made before Diwali”, “budget sheet from March”, “open my latest download”. It also lives in the tray, by the clock."));
+    const label = el("label", "check");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = st.awareChoice;
+    cb.addEventListener("change", () => (st.awareChoice = cb.checked));
+    label.append(cb, el("span", null, "Let MemStor see which app you're using, so “this” and “what I'm working on” make sense, and so you can find files by the app they were made in (“the Photoshop file from yesterday”). It stays on this PC."));
+    box.append(label);
+    bar.append(button("Back", "btn", () => { st.step -= 1; render(); }), next());
+  } else {
+    box.append(el("h2", null, "Optional: ask in your own words"));
+    box.append(el("p", null, "Searching names, folders and the words inside files is free and works now. To also ask things like “video of a girl in pink doing yoga”, MemStor can use Claude with your own API key. Claude then sees small previews of photos and the text of documents to describe them; the descriptions are kept only on this PC. It costs about $3 once for a typical PC and under $1 a month, and you can set a limit."));
+    if (w.ai_on) box.append(el("p", "ok", "AI is already on."));
+    bar.append(
+      button("Back", "btn", () => { st.step -= 1; render(); }),
+      button("Start using MemStor", "btn primary", finishWelcome),
+    );
+    if (!w.ai_on) bar.append(button("Set up AI first", "btn subtle", async () => { await finishWelcome(); location.href = "classic.html#settings"; }));
+  }
+  box.append(bar);
+  return box;
+}
+
+async function finishWelcome() {
+  await invoke("finish_welcome", { awareness: st.awareChoice });
+  st.welcome.show = false;
+  st.step = 0;
+  await refreshContext();
+  render();
+  q.focus();
+}
+
+// ---------- help, updates and problem reports ----------
+
+function updateNote() {
+  const u = st.welcome && st.welcome.update;
+  if (!u) return null;
+  const p = el("div", "update-note");
+  p.append(el("span", null, `MemStor ${u.version} is out.`), button("Get it", "btn small primary", () => invoke("open_url", { url: u.url })));
+  return p;
+}
+
+function helpView() {
+  const w = st.welcome || {};
+  const box = el("div", "changes help");
+  const head = el("header", "quick-head");
+  head.append(el("span", null, `Help · MemStor ${w.version || ""}`), button("Back", "btn small subtle", () => { st.view = "chat"; render(); }));
+  box.append(head);
+  const u = updateNote();
+  if (u) box.append(u);
+  const facts = el("ul", "plain pad");
+  facts.append(
+    el("li", null, `${(w.files_known || 0).toLocaleString()} files remembered. Read inside ${(w.read ? w.read[0] : 0).toLocaleString()} of ${(w.read ? w.read[1] : 0).toLocaleString()} documents and photos so far (this happens quietly, faster when you step away).`),
+    el("li", null, `Open MemStor with ${w.hotkey || "the tray icon"}. Enter asks; ↓ picks a file; Ctrl+Enter shows it in its folder.`),
+  );
+  box.append(facts);
+
+  const upd = el("label", "check pad");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!w.update_check;
+  cb.addEventListener("change", async () => { await invoke("set_update_check", { on: cb.checked }); w.update_check = cb.checked; });
+  upd.append(cb, el("span", null, "Check once a day for a new version (asks GitHub for the latest version number; nothing about you or your files is sent)."));
+  box.append(upd);
+
+  const sec = el("section", "card");
+  sec.append(el("h3", null, "Something not working?"));
+  sec.append(el("p", "muted", "Copy the details below into a message or a GitHub issue. They include MemStor's own problem log, which can mention file names, so look it over first."));
+  const bar = el("div", "card-bar");
+  bar.append(
+    button("Copy details", "btn primary", async () => {
+      st.report = await invoke("problem_report");
+      try { await navigator.clipboard.writeText(st.report); showToast("Copied."); } catch (_) { showToast("Select the text below and copy it."); }
+      render();
+    }),
+    button("Open the log folder", "btn", () => invoke("open_logs")),
+    button("Report on GitHub", "btn subtle", () => invoke("open_url", { url: "https://github.com/kartik82006/memStore/issues/new" })),
+  );
+  sec.append(bar);
+  if (st.report) {
+    const pre = el("pre", "report", st.report);
+    sec.append(pre);
+  }
+  box.append(sec);
+  return box;
+}
+
+async function refreshWelcome() {
+  try { st.welcome = await invoke("welcome_info"); } catch (_) { st.welcome = null; }
 }
 
 // ---------- actions ----------
@@ -359,7 +488,7 @@ async function quickSearch() {
     st.quick = {
       query,
       sel: -1,
-      files: hits.slice(0, 7).map((h) => ({ path: h.path, name: h.name, folder: h.folder, when: h.when, note: "", exists: true })),
+      files: hits.slice(0, 7).map((h) => ({ path: h.path, name: h.name, folder: h.folder, when: h.when, note: h.why || "", exists: true })),
     };
   } catch (_) {
     st.quick = { query, files: [], sel: -1 };
@@ -407,6 +536,12 @@ async function go(what) {
   if (what.startsWith("ask:")) return ask(what.slice(4));
   if (what.startsWith("classic:")) return (location.href = "classic.html#" + what.slice(8));
   if (what === "changes") return showChanges();
+  if (what === "help") {
+    st.view = "help";
+    st.report = "";
+    await refreshWelcome();
+    return render();
+  }
   if (what === "new-chat") {
     await invoke("new_chat");
     st.turns = [];
@@ -452,7 +587,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     e.preventDefault();
     if (!menu.hidden) { closeMenu(); return moreBtn.focus(); }
-    if (st.view === "changes") { st.view = "chat"; return render(); }
+    if (st.view === "changes" || st.view === "help") { st.view = "chat"; return render(); }
     if (q.value) { q.value = ""; st.quick = { query: "", files: [], sel: -1 }; return render(); }
     return hide();
   }
@@ -478,13 +613,15 @@ window.addEventListener("blur", () => {
   setTimeout(() => { if (!document.hasFocus()) hide(); }, 120);
 });
 
-listen("window-shown", () => {
+listen("window-shown", async () => {
   st.off.clear();
+  await refreshWelcome();
   q.focus();
   q.select();
   refreshContext();
 });
 listen("context-ready", refreshContext);
+listen("update-available", async () => { await refreshWelcome(); render(); });
 listen("paused-changed", (e) => { setPausedUi(e.payload); refreshContext(); });
 
 // ---------- start ----------
@@ -497,6 +634,7 @@ listen("paused-changed", (e) => { setPausedUi(e.payload); refreshContext(); });
   } catch (e) {
     showToast(String(e));
   }
+  await refreshWelcome();
   await refreshContext();
   render();
   q.focus();

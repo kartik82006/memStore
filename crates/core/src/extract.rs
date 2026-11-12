@@ -199,6 +199,28 @@ pub fn first_words(text: &str, n: usize) -> String {
     text.split_whitespace().take(n).collect::<Vec<_>>().join(" ")
 }
 
+/// The title and author written inside an Office file (File → Info in Word), if any.
+pub fn office_props(path: &Path) -> (Option<String>, Option<String>) {
+    if !matches!(ext(path).as_str(), "docx" | "pptx" | "xlsx") {
+        return (None, None);
+    }
+    let read = || -> Result<String> {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+        let mut xml = String::new();
+        zip.by_name("docProps/core.xml")?.take(200_000).read_to_string(&mut xml)?;
+        Ok(xml)
+    };
+    let Ok(xml) = read() else { return (None, None) };
+    let tag = |name: &str| -> Option<String> {
+        let start = xml.find(&format!("<{name}"))?;
+        let body_start = start + xml[start..].find('>')? + 1;
+        let end = body_start + xml[body_start..].find(&format!("</{name}>"))?;
+        let v = xml_text(&xml[body_start..end]).trim().to_string();
+        (!v.is_empty()).then_some(v)
+    };
+    (tag("dc:title"), tag("dc:creator"))
+}
+
 /// Text inside the matching XML parts of an Office (zip) file, in part order.
 fn office_text(path: &Path, want: impl Fn(&str) -> bool) -> Result<String> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?).context("not a valid Office file")?;

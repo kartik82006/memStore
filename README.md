@@ -11,6 +11,27 @@ unless you turn on AI, which is off until you add your own Claude API key.
 The plan: https://claude.ai/artifact/PQbWgqCHXuf8BgrXnNueuJ ·
 the assistant plan: https://claude.ai/artifact/2in8QasMoZRc86qziUNCa7
 
+## New in 0.7: ready for everyday use
+
+- **First-run welcome.** The first time MemStor starts, its window opens by itself and walks
+  through what it records, the shortcut key, and the optional AI, in three short steps.
+- **Search inside files, free and on your PC.** MemStor quietly reads the words inside your
+  documents (PDF, Word, PowerPoint, Excel, text), the title and author saved in Office files,
+  and the date and camera inside photos. Typing "alumni meet" now finds the doc that mentions
+  it, even if it's called `notes 3.txt`. It reads quickly while you're away from the PC and
+  slowly while you're using it. Documents that look like IDs or bank details are noted but
+  their words aren't kept.
+- **Forgiving search.** Typos ("budjet"), everyday words ("cv" finds your resume, "ppt",
+  "pic", "bday", "shaadi"), kinds of file ("poster photo" only shows pictures, "sheet" only
+  spreadsheets), and apps ("the photoshop file" finds files changed while Photoshop was in
+  front, when "Seeing" is on). Results say why they matched.
+- **Update note.** Once a day MemStor asks GitHub for the newest version number and shows a
+  "Get it" note when one is out. Turn it off under More → Help and updates.
+- **Help and problem reports.** More → Help and updates shows what MemStor knows, opens its
+  problem log (`%LOCALAPPDATA%\MemStor\logs`), and copies the details for a bug report.
+- **One download page.** Each new version on `main` is published under
+  [Releases](https://github.com/kartik82006/memStore/releases/latest).
+
 ## The assistant (v0.6)
 
 - **Ctrl+Space** opens the bar over whatever you're doing (skipped if you have more than one
@@ -38,8 +59,11 @@ the assistant plan: https://claude.ai/artifact/2in8QasMoZRc86qziUNCa7
 
 ## Get it
 
-Every push builds Windows downloads on GitHub Actions. Open the latest run under
-**Actions → Build**, download `memstor-windows`, and run the `MemStor_…_x64-setup.exe` installer.
+Download `MemStor_…_x64-setup.exe` from the
+[latest release](https://github.com/kartik82006/memStore/releases/latest) and run it. Windows
+may warn that the installer isn't signed yet: choose **More info → Run anyway**.
+
+Builds of pull requests are under **Actions → Build** (download `memstor-windows`).
 
 ## Using the tray app (M1)
 

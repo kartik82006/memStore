@@ -118,7 +118,58 @@ fn start(db_path: &Path, folders: Vec<PathBuf>, paused: bool) -> Running {
             cloud::run_worker(&db, &folders, &worker, &control.paused);
         }));
     }
+    {
+        let (path, control) = (db_path.to_path_buf(), control.clone());
+        threads.push(std::thread::spawn(move || {
+            let db = match Db::open(&path) {
+                Ok(db) => db,
+                Err(e) => return eprintln!("reader could not open the database: {e}"),
+            };
+            read_inside_files(&db, &control);
+        }));
+    }
     Running { control, worker, threads }
+}
+
+/// Read inside new and changed files a few at a time: quickly while the PC is idle, slowly
+/// while it's in use, and not at all while recording is paused.
+fn read_inside_files(db: &Db, control: &Control) {
+    let nap = |secs: u64| {
+        for _ in 0..secs * 4 {
+            if control.stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        true
+    };
+    // Let the catch-up scan go first.
+    if !nap(20) {
+        return;
+    }
+    loop {
+        if control.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        if control.paused.load(Ordering::Relaxed) {
+            if !nap(10) {
+                return;
+            }
+            continue;
+        }
+        let busy = cloud::idle_secs() < 60;
+        let n = match db.index_content(if busy { 3 } else { 20 }, now()) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("reading inside files failed: {e:#}");
+                0
+            }
+        };
+        let wait = if n == 0 { 60 } else if busy { 5 } else { 1 };
+        if !nap(wait) {
+            return;
+        }
+    }
 }
 
 fn stop(r: Running) {

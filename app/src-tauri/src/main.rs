@@ -48,6 +48,8 @@ struct FileHit {
     when: i64,
     /// What last happened: created, modified, renamed or opened.
     kind: String,
+    /// Why it matched, when it isn't the name ("has “alumni meet”", "close to “budget”").
+    why: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -80,16 +82,17 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Empty query lists recent files; otherwise full-text search on names and folders.
+/// Empty query lists recent files; otherwise names, folders and the words inside files.
 #[tauri::command]
 fn search(query: String, state: State<AppState>) -> Result<Vec<FileHit>, String> {
     let db = state.db.lock().map_err(err)?;
-    let rows = if query.trim().is_empty() { db.recent(60) } else { db.search(&query, 60) }.map_err(err)?;
+    let rows: Vec<memstor_core::content::Match> =
+        if query.trim().is_empty() { db.recent(60).map(|r| r.into_iter().map(Into::into).collect()) } else { db.find(&query, 60) }.map_err(err)?;
     Ok(rows
         .into_iter()
         .map(|h| {
             let (name, folder) = split(&h.path);
-            FileHit { name, folder, when: h.last_seen, kind: h.last_kind, path: h.path }
+            FileHit { name, folder, when: h.last_seen, kind: h.last_kind, path: h.path, why: h.why }
         })
         .collect())
 }
@@ -834,10 +837,124 @@ fn ensure_recorder(db_path: &Path) {
 
 /// Run as the recorder: no window, no tray. Stops when the app asks it to.
 fn run_recorder() {
+    memstor_core::logs::init("recorder");
     let quit = std::sync::atomic::AtomicBool::new(false);
     if let Err(e) = memstor_core::recorder::run(&default_db_path(), &quit) {
         eprintln!("recorder stopped: {e:#}");
     }
+}
+
+// ---------- first run, updates, problem reports ----------
+
+#[derive(Serialize)]
+struct WelcomeDto {
+    /// True until the welcome has been finished once.
+    show: bool,
+    version: String,
+    folders: Vec<String>,
+    files_known: i64,
+    /// Files read inside / files to read.
+    read: (i64, i64),
+    hotkey: Option<String>,
+    awareness: bool,
+    ai_on: bool,
+    update: Option<memstor_core::update::Update>,
+    update_check: bool,
+}
+
+#[tauri::command]
+fn welcome_info(state: State<AppState>) -> Result<WelcomeDto, String> {
+    let db = state.db.lock().map_err(err)?;
+    let files_known: i64 = db.count_files().map_err(err)?;
+    Ok(WelcomeDto {
+        show: db.kv("welcomed").map_err(err)?.is_none(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        folders: db.watched_folders().iter().map(|f| f.display().to_string()).collect(),
+        files_known,
+        read: db.content_progress().map_err(err)?,
+        hotkey: state.hotkeys.lock().ok().and_then(|h| h.first().cloned()),
+        awareness: db.pc_awareness().map_err(err)?,
+        ai_on: db.assistant_ready().map_err(err)?.is_some(),
+        update: db.update_available().map_err(err)?,
+        update_check: db.update_check_on().map_err(err)?,
+    })
+}
+
+#[tauri::command]
+fn finish_welcome(awareness: bool, app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(err)?;
+        db.set_kv("welcomed", Some("1")).map_err(err)?;
+    }
+    set_pc_awareness(awareness, app, state)
+}
+
+#[tauri::command]
+fn set_update_check(on: bool, state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_update_check_on(on).map_err(err)
+}
+
+#[tauri::command]
+fn open_url(url: String, app: AppHandle) -> Result<(), String> {
+    if !url.starts_with("https://github.com/kartik82006/") && !url.starts_with("https://console.anthropic.com/") {
+        return Err("MemStor only opens its own download page and the Anthropic console.".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(err)
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<(), String> {
+    let dir = memstor_core::logs::dir();
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(err)
+}
+
+/// Text to paste into a bug report: versions, state, and the last lines of the logs. File
+/// names are left out of the summary; the logs may contain some.
+#[tauri::command]
+fn problem_report(state: State<AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(err)?;
+    let (read, to_read) = db.content_progress().map_err(err)?;
+    let mut t = format!(
+        "MemStor {}\nWindows: {}\nRecorder running: {}\nPaused: {}\nFiles known: {}\nRead inside: {read} of {to_read}\nAI ready: {}\nEncrypted: {}\nHotkeys: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        db.recorder_alive(),
+        db.recording_paused(),
+        db.count_files().unwrap_or(0),
+        db.assistant_ready().ok().flatten().is_some(),
+        db.is_encrypted(),
+        state.hotkeys.lock().map(|h| h.join(", ")).unwrap_or_default(),
+    );
+    for name in ["app", "recorder"] {
+        t.push_str(&format!("\n--- {name}.log (last lines) ---\n{}\n", memstor_core::logs::tail(name, 40)));
+    }
+    Ok(t)
+}
+
+/// Once a day, ask GitHub whether a newer MemStor is out.
+fn watch_for_updates(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(90));
+        loop {
+            let path = app.state::<AppState>().db_path.clone();
+            if let Ok(db) = Db::open(&path) {
+                let now = chrono::Local::now().timestamp();
+                if db.update_check_due(now).unwrap_or(false) {
+                    match memstor_core::update::fetch_latest() {
+                        Ok(latest) => {
+                            let _ = db.note_latest(latest, now);
+                            if db.update_available().ok().flatten().is_some() {
+                                let _ = app.emit("update-available", ());
+                            }
+                        }
+                        Err(e) => eprintln!("update check: {e:#}"),
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    });
 }
 
 // ---------- the assistant ----------
@@ -953,6 +1070,7 @@ fn main() {
     if std::env::args().any(|a| a == "--recorder") {
         return run_recorder();
     }
+    memstor_core::logs::init("app");
     let short = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
     let long = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
 
@@ -1042,7 +1160,8 @@ fn main() {
                 }
             });
 
-            let start_visible = std::env::args().any(|a| a == "--show");
+            // Open the window by itself the first time, so the welcome is seen.
+            let start_visible = std::env::args().any(|a| a == "--show") || db.kv("welcomed").ok().flatten().is_none();
             app.manage(AppState {
                 db: Mutex::new(db),
                 db_path,
@@ -1054,6 +1173,7 @@ fn main() {
             if start_visible {
                 toggle_window(app.handle(), 0);
             }
+            watch_for_updates(app.handle().clone());
             Ok(())
         })
         // Closing the window hides it; the app keeps recording in the tray.
@@ -1064,6 +1184,12 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            welcome_info,
+            finish_welcome,
+            set_update_check,
+            open_url,
+            open_logs,
+            problem_report,
             context_now,
             set_pc_awareness,
             ask,

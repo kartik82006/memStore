@@ -67,7 +67,7 @@ pub struct Hit {
 }
 
 /// The newest event's kind for a file (ties broken by insert order).
-const LAST_KIND: &str =
+pub(crate) const LAST_KIND: &str =
     "(SELECT kind FROM events e WHERE e.file_id = f.id ORDER BY ts DESC, id DESC LIMIT 1)";
 
 const SCHEMA: &str = r#"
@@ -162,6 +162,7 @@ impl Db {
         conn.execute_batch(crate::groups::SCHEMA)?;
         conn.execute_batch(crate::actions::SCHEMA)?;
         conn.execute_batch(crate::context::SCHEMA)?;
+        conn.execute_batch(crate::content::SCHEMA)?;
         conn.execute_batch(crate::agent::SCHEMA)?;
         Ok(Self { conn, excluded: Default::default(), encrypted: false })
     }

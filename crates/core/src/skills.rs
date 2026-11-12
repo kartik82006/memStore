@@ -89,9 +89,9 @@ pub fn all() -> Vec<Skill> {
     vec![
         Skill {
             name: "find_files",
-            description: "Find files by words in their name or folder path. Fast and free; use first when the person names a file or folder.",
+            description: "Find files by words in their name, folder, or the words inside documents (read on the PC), forgiving typos. Kind words like 'photo', 'pdf', 'sheet' and app names like 'photoshop' narrow it. Fast and free; use first.",
             risk: Risk::Look,
-            input: || obj(json!({"words": {"type": "string", "description": "Words from the file name or folder, e.g. 'thesis chapter'"}}), &["words"]),
+            input: || obj(json!({"words": {"type": "string", "description": "Words from the name, folder or contents, e.g. 'thesis chapter' or 'alumni meet photo'"}}), &["words"]),
         },
         Skill {
             name: "recent_files",
@@ -271,8 +271,8 @@ pub fn run(db: &Db, name: &str, input: &Value) -> Result<Output> {
     match name {
         "find_files" => {
             let words = str_arg(input, "words")?;
-            let hits = db.search(words, 25)?;
-            let files: Vec<FileItem> = hits.iter().map(|h| FileItem::new(&h.path, h.last_seen, kinds_note(&h.last_kind))).collect();
+            let hits = db.find(words, 25)?;
+            let files: Vec<FileItem> = hits.iter().map(|h| FileItem::new(&h.path, h.last_seen, h.why.clone().unwrap_or_else(|| kinds_note(&h.last_kind)))).collect();
             Ok(files_output(format!("Files matching \"{words}\""), files, None))
         }
         "recent_files" => {
@@ -493,6 +493,13 @@ fn file_info(db: &Db, path: &str) -> Result<Output> {
         text.push_str(&format!("First seen {}, last used {}, {n} recorded events.\n", date_label(a), date_label(b)));
     } else {
         text.push_str("MemStor has no history for it.\n");
+    }
+    if let Some(inside) = db.inside_summary(path)? {
+        text.push_str(&format!("{inside}.\n"));
+    }
+    let apps = db.apps_for(path)?;
+    if !apps.is_empty() {
+        text.push_str(&format!("Worked on in: {}.\n", apps.join(", ")));
     }
     if let Some(d) = db.description(path)? {
         text.push_str(&format!("Description: {}\n", d.search_text().chars().take(600).collect::<String>()));

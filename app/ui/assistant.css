@@ -185,3 +185,24 @@ kbd { font: 11px var(--ui); padding: 1px 5px; border: 1px solid var(--line); bor
 #toast[hidden] { display: none; }
 
 @media (max-width: 520px) { .hint span:not(.right) { display: none; } }
+
+/* First run */
+.welcome { padding: 8px 20px 16px; display: flex; flex-direction: column; gap: 12px; }
+.welcome h2 { margin: 4px 0 0; font-size: 20px; font-weight: 600; }
+.welcome p { max-width: 62ch; }
+.steps-dots { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0; font-size: 12px; color: var(--muted); }
+.steps-dots li { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); }
+.steps-dots li.on { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.steps-dots li.done { color: var(--rec); }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+.big-key { font-size: 18px; }
+.big-key kbd { font: 600 16px var(--ui); padding: 4px 10px; border: 1px solid var(--line); border-bottom-width: 3px; border-radius: 6px; background: var(--surface); }
+label.check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; max-width: 66ch; }
+label.check input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+.ok { color: var(--rec); }
+
+/* Updates and help */
+.update-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.help .card { margin: 12px; }
+.help .pad { padding: 4px 16px; }
+pre.report { margin: 10px 0 0; max-height: 160px; overflow: auto; font: 12px/1.4 Consolas, ui-monospace, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre-wrap; user-select: text; }

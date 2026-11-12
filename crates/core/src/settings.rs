@@ -99,6 +99,8 @@ impl Db {
         for (id, path) in files {
             tx.execute("DELETE FROM events WHERE file_id = ?1", [id])?;
             tx.execute("DELETE FROM files_fts WHERE rowid = ?1", [id])?;
+            tx.execute("DELETE FROM file_content WHERE file_id = ?1", [id])?;
+            tx.execute("DELETE FROM content_fts WHERE rowid = ?1", [id])?;
             tx.execute("DELETE FROM files WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM memory_files WHERE path = ?1", [path])?;
             tx.execute("DELETE FROM not_related WHERE a = ?1 OR b = ?1", [path])?;
@@ -148,7 +150,7 @@ impl Db {
     /// Recording carries on from now; nothing from before is picked up again.
     pub fn wipe_history(&self, now: i64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        for table in ["events", "files_fts", "files", "memory_files", "memory_days", "memories", "not_related", "app_usage", "actions", "chat"] {
+        for table in ["events", "files_fts", "files", "memory_files", "memory_days", "memories", "not_related", "app_usage", "actions", "chat", "file_content", "content_fts"] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         // Don't let the catch-up scan or the memory saver re-read the past.
